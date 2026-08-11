@@ -512,10 +512,10 @@ function legacyManagedRouterProvider(contents) {
     fields.get("wire_api") === "responses";
   const currentShape =
     fields.size === 3 &&
-    fields.get("name") === "Codex Router (external models)";
+    fields.get("name") === "Nexus (external models)";
   const prototypeShape =
     fields.size === 4 &&
-    fields.get("name") === "Codex Router (extra providers)" &&
+    fields.get("name") === "Nexus (extra providers)" &&
     fields.get("requires_openai_auth") === "true";
   return commonFieldsMatch && (currentShape || prototypeShape)
     ? { lines, start, end }
@@ -656,7 +656,7 @@ function enabledContents(contents) {
   const providerBlock = [
     providerStartMarker,
     `[model_providers.${routerProviderId}]`,
-    'name = "Codex Router (external models)"',
+    'name = "Nexus (external models)"',
     `base_url = ${JSON.stringify(routerBaseUrl)}`,
     'wire_api = "responses"',
     providerEndMarker,

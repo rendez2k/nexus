@@ -204,7 +204,7 @@ test("a native 503 before headers is retried and the caller sees only the succes
     );
     assert.match(
       router.testErrors(),
-      /\[codex-router\] native upstream retry 1\/2 status=503 model=gpt-5\.6-sol path=\/v1\/responses delayMs=\d+/,
+      /\[nexus\] native upstream retry 1\/2 status=503 model=gpt-5\.6-sol path=\/v1\/responses delayMs=\d+/,
     );
     // The logged path is the authenticated route the router already resolved,
     // never the caller capability in the URL it was dialed with.

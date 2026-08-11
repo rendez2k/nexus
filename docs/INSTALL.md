@@ -28,7 +28,7 @@ the same command.
 ## Ask Codex to install it
 
 ```text
-Install Codex Router from:
+Install Nexus from:
 https://github.com/duolahypercho/codex-router
 
 Follow AGENTS.md. Preserve all of my existing Codex settings and ChatGPT login.
@@ -178,7 +178,7 @@ protected access.
 Setup performs these operations in order:
 
 1. Validates provider selection and credential presence.
-2. Detects other model-catalog owners and earlier Codex Router variants.
+2. Detects other model-catalog owners and earlier Nexus variants.
 3. With approval, snapshots and stops only recognized older variants.
 4. Installs locked Node dependencies and pinned LiteLLM in `.venv`.
 5. Generates separate random Codex caller and internal-service keys.
@@ -229,7 +229,7 @@ An unknown catalog owner requires a manual decision; automatic setup stops
 without changing it.
 
 If `model_catalog_json` points to a user-owned native Codex catalog rather than
-another router, you can explicitly keep it as Codex Router's merge base:
+another router, you can explicitly keep it as Nexus's merge base:
 
 ```sh
 ./install.sh --auto --providers configured --adopt-native-catalog
@@ -240,10 +240,10 @@ another router, you can explicitly keep it as Codex Router's merge base:
 ```
 
 Adoption is accepted only when the path is absolute, the JSON contains at
-least one native model, none of its slugs are already routed by Codex Router,
+least one native model, none of its slugs are already routed by Nexus,
 and no custom `openai_base_url` is configured. The file stays user-owned and
 is read in place on every catalog rebuild, so moving, deleting, or making it
-invalid stops the rebuild with an explicit error. Disabling Codex Router
+invalid stops the rebuild with an explicit error. Disabling Nexus
 restores that exact catalog path. A failed install clears a pending adoption
 and leaves the original Codex config intact.
 

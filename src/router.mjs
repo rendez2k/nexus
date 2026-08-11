@@ -389,7 +389,7 @@ function logUpstreamRetry({ attempt, retries, status, error, delayMs }, model, r
     ? `status=${status}`
     : `error=${error?.name || "Error"}${error?.cause?.code ? `/${error.cause.code}` : ""}`;
   console.error(
-    `[codex-router] native upstream retry ${attempt}/${retries} ${cause} ` +
+    `[nexus] native upstream retry ${attempt}/${retries} ${cause} ` +
       `model=${model || "unknown"} path=${routePath} delayMs=${delayMs}`,
   );
 }
@@ -1029,7 +1029,7 @@ async function bridgeVisionInput(input, route, request) {
   // named. Silent automatic spending is the failure mode; the log carries a
   // model, an engine, and counts -- never a transcript.
   console.error(
-    `[codex-router] vision-bridge model=${route.slug} engine=${engines[0].slug} ` +
+    `[nexus] vision-bridge model=${route.slug} engine=${engines[0].slug} ` +
       `images=${result.images} described=${result.described} failed=${result.failed}` +
       (fellBack ? ` fellBack=${fellBack}` : ""),
   );
@@ -1432,7 +1432,7 @@ function requireCodexTransport(request, response) {
     writeJson(response, 415, {
       error: {
         type: "unsupported_media_type",
-        message: "Codex router requests require Content-Type: application/json.",
+        message: "Nexus requests require Content-Type: application/json.",
       },
     });
     return false;
@@ -1527,7 +1527,7 @@ async function handleResponses(request, response, requestUrl) {
       });
       if (!QUIET) {
         console.error(
-          `[codex-router] model=${requestedModel || "unknown"} provider=${route.provider} status=${compaction.status}`,
+          `[nexus] model=${requestedModel || "unknown"} provider=${route.provider} status=${compaction.status}`,
         );
       }
       return;
@@ -1670,7 +1670,7 @@ async function handleResponses(request, response, requestUrl) {
       });
       if (!QUIET) {
         console.error(
-          `[codex-router] model=${requestedModel || "unknown"} provider=${route.provider} status=${upstream.status}`,
+          `[nexus] model=${requestedModel || "unknown"} provider=${route.provider} status=${upstream.status}`,
         );
       }
       return;
@@ -1737,7 +1737,7 @@ async function handleResponses(request, response, requestUrl) {
       // The substitution is named in the log line as well as the usage event:
       // a router that quietly invents token counts is its own trap.
       console.error(
-        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${clientWalkedAway ? 0 : upstream.status}${
+        `[nexus] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${clientWalkedAway ? 0 : upstream.status}${
           upstreamRetries ? ` retries=${upstreamRetries}` : ""
         }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}`,
       );
@@ -1844,7 +1844,7 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
     });
     if (!QUIET) {
       console.error(
-        `[codex-router] model=${requestedModel} provider=openai status=${upstream.status}${upstreamRetries ? ` retries=${upstreamRetries}` : ""}`,
+        `[nexus] model=${requestedModel} provider=openai status=${upstream.status}${upstreamRetries ? ` retries=${upstreamRetries}` : ""}`,
       );
     }
   } catch (error) {
@@ -1946,7 +1946,7 @@ const server = http.createServer((request, response) => {
     // indistinguishable in production. The cause belongs in the log; response
     // bodies never do, so only the error's own message and code are recorded.
     console.error(
-      `[codex-router] request failed: ${
+      `[nexus] request failed: ${
         error instanceof Error ? `${error.name}: ${error.message}` : String(error)
       }${error?.code ? ` (${error.code})` : ""}`,
     );
@@ -1979,18 +1979,18 @@ server.on("upgrade", (_request, socket) => {
 server.on("error", (error) => {
   if (error?.code === "EADDRINUSE") {
     console.error(
-      `[codex-router] cannot listen: ${LISTEN_HOST}:${LISTEN_PORT} is already in use. Another router or an unrelated process holds it; stop that process, then start the service again.`,
+      `[nexus] cannot listen: ${LISTEN_HOST}:${LISTEN_PORT} is already in use. Another router or an unrelated process holds it; stop that process, then start the service again.`,
     );
     process.exit(98);
   }
   if (error?.code === "EACCES") {
     console.error(
-      `[codex-router] cannot listen: permission denied binding ${LISTEN_HOST}:${LISTEN_PORT}.`,
+      `[nexus] cannot listen: permission denied binding ${LISTEN_HOST}:${LISTEN_PORT}.`,
     );
     process.exit(97);
   }
   console.error(
-    `[codex-router] server error: ${
+    `[nexus] server error: ${
       error instanceof Error ? `${error.name}: ${error.message}` : String(error)
     }${error?.code ? ` (${error.code})` : ""}`,
   );
@@ -1999,7 +1999,7 @@ server.on("error", (error) => {
 server.requestTimeout = 0;
 server.headersTimeout = 65_000;
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
-  console.error("[codex-router] listening");
+  console.error("[nexus] listening");
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

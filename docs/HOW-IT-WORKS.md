@@ -1,4 +1,4 @@
-# How Codex Router works
+# How Nexus works
 
 The provider core has one app frontend: Codex uses the Responses API and a
 merged native catalog.
@@ -7,7 +7,7 @@ merged native catalog.
 
 The Codex App expects the Responses API and a Codex-shaped model catalog.
 Kimi and DeepSeek expose OpenAI-compatible Chat Completions APIs with different
-authentication and request details. Codex Router bridges those contracts while
+authentication and request details. Nexus bridges those contracts while
 leaving native GPT traffic on the normal ChatGPT Codex backend.
 
 Four pieces make the integration work:

@@ -144,7 +144,7 @@ function readRouted(port, body) {
 // A gateway that dies partway through an SSE body used to reach the client as a
 // bare socket reset: `.pipe()` never forwarded the error, so the response stayed
 // half-written until the top-level handler destroyed it, and the log said only
-// "[codex-router] request failed".
+// "[nexus] request failed".
 test("a gateway that dies mid-stream ends the routed body and logs the cause", async () => {
   const gateway = await mockServer((request, response) => {
     if (request.method === "GET" && request.url === "/health") {
@@ -201,7 +201,7 @@ test("a gateway that dies mid-stream ends the routed body and logs the cause", a
     while (!/request failed: /.test(router.testErrors()) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    assert.match(router.testErrors(), /\[codex-router\] request failed: \w+: .+/);
+    assert.match(router.testErrors(), /\[nexus\] request failed: \w+: .+/);
 
     // The turn is truncated, not successful: the meter must record a failure
     // carrying the abort marker instead of the committed 200 the client

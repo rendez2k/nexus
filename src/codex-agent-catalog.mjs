@@ -47,9 +47,9 @@ export function routedAgentDefinition(model) {
   const agentName = `router_${safeIdentifier(slug, "_")}`;
   const displayName = String(model.displayName || model.display_name || slug).trim();
   const contents = [
-    "# Managed by Codex Router. Refresh the model catalog to update this file.",
+    "# Managed by Nexus. Refresh the model catalog to update this file.",
     `name = ${tomlString(agentName)}`,
-    `description = ${tomlString(`${displayName} agent routed through an authenticated Codex Router provider.`)}`,
+    `description = ${tomlString(`${displayName} agent routed through an authenticated Nexus provider.`)}`,
     'model_provider = "codex-router"',
     `model = ${tomlString(slug)}`,
     "",

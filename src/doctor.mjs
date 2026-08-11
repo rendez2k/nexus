@@ -191,7 +191,7 @@ function repair() {
 if (process.argv.includes("--help")) {
   process.stdout.write(`Usage: doctor [--json] [--fix [--migrate-known]]
 
-Checks the complete Codex Router installation without printing credentials.
+Checks the complete Nexus installation without printing credentials.
 --fix reinstalls generated files, configuration, and the background service.
 Known older routers are migrated only with the explicit --migrate-known flag.
 `);
@@ -596,7 +596,7 @@ add(
       : "no conflicting router detected",
   legacy.installations.length
     ? "Run ./bin/doctor --fix --migrate-known."
-    : "Disable the other router manually; Codex Router will not overwrite it.",
+    : "Disable the other router manually; Nexus will not overwrite it.",
 );
 
 // When the tray follows the desktop apps it stops the service as soon as Codex

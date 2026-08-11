@@ -163,7 +163,7 @@ test("an upstream body that fails mid-stream ends the chunked body instead of re
       // The router's top-level handler: log the cause, then terminate the
       // stream gracefully rather than destroying the socket.
       logged.push(
-        `[codex-router] request failed: ${
+        `[nexus] request failed: ${
           error instanceof Error ? `${error.name}: ${error.message}` : String(error)
         }`,
       );
@@ -184,7 +184,7 @@ test("an upstream body that fails mid-stream ends the chunked body instead of re
   );
   // The message is what made this diagnosable at all; the old handler logged a
   // bare string with no error attached.
-  assert.deepEqual(logged, ["[codex-router] request failed: Error: upstream exploded"]);
+  assert.deepEqual(logged, ["[nexus] request failed: Error: upstream exploded"]);
 
   assert.equal(result.aborted, false, "the socket was reset instead of ending the body");
   assert.equal(result.complete, true, "the chunked body never reached its terminator");

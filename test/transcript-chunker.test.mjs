@@ -100,7 +100,7 @@ test("chunkFile matches the real referenced transcript shape", () => {
 test("chunker handles a real router log line stream", () => {
   const lines = [];
   for (let i = 0; i < 200; i += 1) {
-    lines.push(`14:${String(i % 60).padStart(2, "0")}:00 - INFO: [codex-router] model=opencode-go/deepseek-v4-flash status=200 ${"d".repeat(40)}`);
+    lines.push(`14:${String(i % 60).padStart(2, "0")}:00 - INFO: [nexus] model=opencode-go/deepseek-v4-flash status=200 ${"d".repeat(40)}`);
   }
   const { slices } = chunkLines(lines, { budgetTokens: 30, charsPerToken: 4 });
   assert.equal(coverageMatches(slices, lines), true);

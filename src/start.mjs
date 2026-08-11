@@ -138,7 +138,7 @@ function stopChildren() {
   }, 3_000).unref();
 }
 
-const FRONTEND = { script: "router.mjs", service: "codex-router", label: "Codex router" };
+const FRONTEND = { script: "router.mjs", service: "codex-router", label: "Nexus" };
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, stopChildren);
 
 async function main() {

@@ -107,7 +107,7 @@ if (-not $CheckoutInstall) {
   } else {
     if (Test-Path (Join-Path $InstallDir ".git")) {
       if (-not (Test-RouterCheckout $InstallDir)) {
-        throw "$InstallDir is not a Codex Router checkout."
+        throw "$InstallDir is not a Nexus checkout."
       }
       # A checkout with no origin prints nothing, so the native command yields
       # $null and .Trim() aborts with a PowerShell internal error naming
@@ -168,11 +168,11 @@ if (-not $CheckoutInstall) {
       & git -C $InstallDir pull --ff-only origin main
       if ($LASTEXITCODE -ne 0) { throw "Unable to fast-forward the managed checkout." }
     } elseif (Test-Path $InstallDir) {
-      throw "$InstallDir exists and is not a Codex Router checkout."
+      throw "$InstallDir exists and is not a Nexus checkout."
     } else {
       New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) | Out-Null
       & git clone --depth 1 $RepositoryUrl $InstallDir
-      if ($LASTEXITCODE -ne 0) { throw "Unable to clone Codex Router." }
+      if ($LASTEXITCODE -ne 0) { throw "Unable to clone Nexus." }
     }
     $Repository = $InstallDir
   }
@@ -208,7 +208,7 @@ if (-not $CheckoutInstall) {
 }
 
 if (-not (Test-RouterCheckout $ScriptDirectory)) {
-  throw "-CheckoutInstall must be run from a Codex Router checkout."
+  throw "-CheckoutInstall must be run from a Nexus checkout."
 }
 
 Assert-Command "node" "Install Node.js 24 LTS from https://nodejs.org/."

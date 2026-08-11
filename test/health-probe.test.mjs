@@ -279,7 +279,7 @@ test("a real slow HTTP service is polled through fetch until it answers", async 
   try {
     const started = Date.now();
     await waitForHealth({
-      label: "Codex router",
+      label: "Nexus",
       url: `http://127.0.0.1:${port}/health`,
       timeoutMs: 20_000,
       expectedService: "codex-router",
@@ -340,7 +340,7 @@ test("the frontend wait keeps checking that the right service answered", async (
   };
 
   await waitForHealth({
-    label: "Codex router",
+    label: "Nexus",
     url: URL_UNDER_TEST,
     timeoutMs: 5_000,
     expectedService: "codex-router",

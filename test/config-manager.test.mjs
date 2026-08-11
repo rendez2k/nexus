@@ -506,8 +506,8 @@ test("config manager adopts the exact legacy router-owned provider table", () =>
       .replace("# BEGIN codex-router-provider-managed\n", "")
       .replace("\n# END codex-router-provider-managed", "")
       .replace(
-        'name = "Codex Router (external models)"',
-        'name = "Codex Router (extra providers)"',
+        'name = "Nexus (external models)"',
+        'name = "Nexus (extra providers)"',
       )
       .replace('wire_api = "responses"', 'wire_api = "responses"\nrequires_openai_auth = true');
     writeFileSync(configPath, legacy, { mode: 0o600 });
@@ -519,7 +519,7 @@ test("config manager adopts the exact legacy router-owned provider table", () =>
     const migrated = readFileSync(configPath, "utf8");
     assert.equal((migrated.match(/\[model_providers\.codex-router\]/g) || []).length, 1);
     assert.match(migrated, /# BEGIN codex-router-provider-managed/);
-    assert.match(migrated, /name = "Codex Router \(external models\)"/);
+    assert.match(migrated, /name = "Nexus \(external models\)"/);
     assert.doesNotMatch(migrated, /extra providers|requires_openai_auth/);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });

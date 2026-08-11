@@ -20,7 +20,7 @@ import {
 const effectivePlatform = process.env.CODEX_ROUTER_SERVICE_PLATFORM || process.platform;
 const command = process.argv[2] || "status";
 const renderCommands = new Set(["render", "render-launcher", "render-task"]);
-const taskName = "Codex Router";
+const taskName = "Nexus";
 const wrapperPath = path.join(STATE_DIR, "start-codex-router.cmd");
 const launcherPath = path.join(STATE_DIR, "start-codex-router-hidden.vbs");
 

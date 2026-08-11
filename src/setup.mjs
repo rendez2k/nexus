@@ -94,13 +94,13 @@ function incomplete(message) {
 if (args.includes("--help")) {
   process.stdout.write(`Usage: setup [options]
 
-Guided, credential-safe Codex Router setup.
+Guided, credential-safe Nexus setup.
 
 Options:
   --guided             Ask provider and migration questions interactively
   --auto               Use already configured credentials (default)
   --providers LIST     Comma-separated provider ids
-  --migrate-known      Safely migrate recognized earlier Codex Router installs
+  --migrate-known      Safely migrate recognized earlier Nexus installs
   --adopt-native-catalog  Use an existing user-owned native Codex catalog as the merge base
   --smoke-test         Make one small live request per enabled provider
   --selection-only     Save provider selection without installing (development)
@@ -454,7 +454,7 @@ async function main() {
   }
   run(process.execPath, [path.join(SOURCE_ROOT, "src", "doctor.mjs")]);
   process.stdout.write(
-    `\nCodex Router is ready with: ${providers.join(", ")}\nFully quit Codex, reopen it, and start a new task.\n`,
+    `\nNexus is ready with: ${providers.join(", ")}\nFully quit Codex, reopen it, and start a new task.\n`,
   );
   if (visionBridge?.enabled && visionBridge.engine) {
     process.stdout.write(

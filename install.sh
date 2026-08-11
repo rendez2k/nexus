@@ -288,7 +288,7 @@ fi
 
 cat <<'EOF'
 
-Codex Router is installed. Fully quit Codex, reopen it, and start a new task.
+Nexus is installed. Fully quit Codex, reopen it, and start a new task.
 The model picker will show only the providers you enabled while preserving
 native GPT models.
 EOF

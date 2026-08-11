@@ -20,7 +20,7 @@ test("routed agent definitions select the router provider and exact model slug",
   const definition = routedAgentDefinition(kimi);
   assert.equal(definition.agentName, "router_kimi_oauth_k3");
   assert.equal(definition.fileName, "router-model-kimi-oauth-k3.toml");
-  assert.match(definition.contents, /^# Managed by Codex Router\./);
+  assert.match(definition.contents, /^# Managed by Nexus\./);
   assert.match(definition.contents, /model_provider = "codex-router"/);
   assert.match(definition.contents, /model = "kimi-oauth\/k3"/);
 });

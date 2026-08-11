@@ -13,7 +13,7 @@ if (!supportedTargets.has(TARGET)) {
   );
 }
 
-export const TARGET_DISPLAY_NAME = "Codex Router";
+export const TARGET_DISPLAY_NAME = "Nexus";
 const configuredSourceRoot = process.env.CODEX_ROUTER_SOURCE_ROOT;
 if (configuredSourceRoot && !path.isAbsolute(configuredSourceRoot)) {
   throw new Error("CODEX_ROUTER_SOURCE_ROOT must be an absolute path.");

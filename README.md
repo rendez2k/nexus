@@ -1,4 +1,4 @@
-# Codex Router
+# Nexus
 
 Use Anthropic, Kimi, DeepSeek, xAI, GitHub Copilot, opencode Go, Command Code,
 and future external models inside the Codex App and CLI through one local,
@@ -7,7 +7,7 @@ The integration speaks the Responses API and merges external entries into
 Codex's native model catalog, so routed models appear in the normal picker
 next to the native GPT models.
 
-Codex Router is an independent community project. It is not affiliated with or
+Nexus is an independent community project. It is not affiliated with or
 endorsed by OpenAI, GitHub, Anthropic, Moonshot AI, DeepSeek, OpenRouter,
 opencode, or the referenced opencodex project.
 
@@ -475,7 +475,7 @@ model_catalog_json = "/absolute/path/to/.codex/codex-router/merged-models.json"
 
 # BEGIN codex-router-provider-managed
 [model_providers.codex-router]
-name = "Codex Router (external models)"
+name = "Nexus (external models)"
 base_url = "http://127.0.0.1:4102/_codex-router/<generated-capability>/v1"
 wire_api = "responses"
 # END codex-router-provider-managed

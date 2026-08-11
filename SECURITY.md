@@ -8,7 +8,7 @@ intentional exception: the router reuses the official Kimi CLI session under
 
 ## Credential separation
 
-Codex Router keeps every credential class on a distinct path:
+Nexus keeps every credential class on a distinct path:
 
 - ChatGPT/Codex authentication is allow-listed only for native GPT, image, and
   standalone web-search requests.
@@ -65,7 +65,7 @@ systemd, or Task Scheduler definitions. Environment-only credentials work for a
 foreground router process, but background setup requires a protected file.
 Compatible legacy Keychain lookup is a migration path only.
 
-Kimi OAuth remains under `$KIMI_CODE_HOME` or `~/.kimi-code`; Codex Router does
+Kimi OAuth remains under `$KIMI_CODE_HOME` or `~/.kimi-code`; Nexus does
 not copy it into its own state directory.
 
 Never commit the state directory, a provider credential, a Kimi credential file, or

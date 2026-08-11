@@ -105,7 +105,7 @@ kimi login
 ./bin/doctor
 ```
 
-Codex Router reads the official Kimi CLI credential under `$KIMI_CODE_HOME` or
+Nexus reads the official Kimi CLI credential under `$KIMI_CODE_HOME` or
 `~/.kimi-code` and refreshes it under a cross-process lock. Do not copy the OAuth
 token into Codex config, an API-key file, or an environment variable.
 
@@ -270,7 +270,7 @@ journalctl --user -u codex-router.service --since today
 Windows PowerShell:
 
 ```powershell
-Get-ScheduledTask -TaskName "Codex Router"
+Get-ScheduledTask -TaskName "Nexus"
 ./codex-router.ps1 doctor --fix
 ```
 
@@ -325,7 +325,7 @@ never uploads a bundle automatically.
 
 ## WebSocket warning followed by HTTP fallback
 
-This is expected. Codex Router declines the optional Responses WebSocket
+This is expected. Nexus declines the optional Responses WebSocket
 upgrade, and current Codex falls back to compressed HTTP. A warning alone is not
 a failed model request.
 

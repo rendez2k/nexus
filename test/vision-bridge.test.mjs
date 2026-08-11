@@ -1524,7 +1524,7 @@ test("a bridged read is recorded rather than spent silently", async () => {
   // A production LaunchAgent hard-sets CODEX_ROUTER_QUIET=1, so gating this
   // line on it would hide automatic spending on exactly the installs that run
   // unattended.
-  assert.match(bridge, /console\.error\(\s*`\[codex-router\] vision-bridge /);
+  assert.match(bridge, /console\.error\(\s*`\[nexus\] vision-bridge /);
   assert.doesNotMatch(
     bridge,
     /if \(!QUIET\)/,

@@ -1,9 +1,9 @@
 {
-  "name": "codex-model-router",
+  "name": "nexus",
   "version": "0.4.0-beta.2",
   "private": true,
   "type": "module",
-  "description": "Extensible local model router for Codex and Cursor",
+  "description": "Nexus - extensible local model router for Codex and Cursor",
   "engines": {
     "node": ">=22.19.0"
   },

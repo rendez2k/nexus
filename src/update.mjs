@@ -35,7 +35,7 @@ function requireManagedCheckout() {
     "git@github.com:duolahypercho/codex-router.git",
   ].filter(Boolean));
   if (!allowed.has(origin)) {
-    throw new Error(`The origin remote is not a recognized Codex Router repository: ${origin}`);
+    throw new Error(`The origin remote is not a recognized Nexus repository: ${origin}`);
   }
 }
 
@@ -224,7 +224,7 @@ export function updateCheckout({ force = false } = {}) {
       );
     }
     throw new Error(
-      `Update failed; Codex Router was restored to ${status.current.slice(0, 12)}.`,
+      `Update failed; Nexus was restored to ${status.current.slice(0, 12)}.`,
       { cause: error },
     );
   }

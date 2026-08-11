@@ -1,7 +1,7 @@
 # macOS tray app
 
 Model Router Tray is a native macOS Dynamic-Island-style overlay plus menu-bar
-control panel for the local Codex router. The top-center island follows the
+control panel for the local Nexus router. The top-center island follows the
 provider handling the latest request, reveals live usage on hover, expands on
 click, and surfaces concurrent model requests when more than one agent is
 active. The tray shows Codex service state, an all-provider usage overview,

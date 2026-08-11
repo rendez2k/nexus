@@ -3514,7 +3514,7 @@ test("routed compaction records usage and logs on success and on failure", async
     assert.equal(success.totalTokens, 1290);
     await waitForStderr(
       router,
-      /\[codex-router\] model=deepseek\/deepseek-v4-pro provider=deepseek status=200/,
+      /\[nexus\] model=deepseek\/deepseek-v4-pro provider=deepseek status=200/,
     );
 
     failing = true;
@@ -3536,7 +3536,7 @@ test("routed compaction records usage and logs on success and on failure", async
     assert.equal("totalTokens" in failure, false);
     await waitForStderr(
       router,
-      /\[codex-router\] model=deepseek\/deepseek-v4-pro provider=deepseek status=502/,
+      /\[nexus\] model=deepseek\/deepseek-v4-pro provider=deepseek status=502/,
     );
   } finally {
     await stopChild(router);
