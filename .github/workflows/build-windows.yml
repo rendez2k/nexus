@@ -1,0 +1,50 @@
+name: Build Windows tray
+
+# Produces the Nexus tray executable for Windows.
+#
+# `workflow_dispatch` is the point of this workflow: CI only runs on the
+# default branch and pull requests, so this is how you get an .exe out of a
+# feature branch. Actions tab -> "Build Windows tray" -> Run workflow -> pick
+# the branch. The binary lands as a downloadable artifact on the run.
+
+"on":
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "apps/desktop/**"
+      - ".github/workflows/build-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - uses: dtolnay/rust-toolchain@stable
+      # Cold Tauri builds compile the whole dependency tree and take 10-20
+      # minutes; cached ones are a fraction of that.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: npm ci --prefix apps/desktop
+      # build:binary is `tauri build --no-bundle`: it emits the bare
+      # executable and skips the MSI/NSIS installers. That is deliberate - the
+      # router locates the tray by this exact path (src/install-plan.mjs), and
+      # docs/DESKTOP-TRAY.md tells you to launch it directly. Swap to
+      # `npm run build --prefix apps/desktop` if you ever want the installers.
+      - run: npm run build:binary --prefix apps/desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-tray-windows-x64
+          # Named for the Cargo [[bin]], which is still codex-router-desktop -
+          # renaming it would break the router's tray lookup. See docs/RENAME.md.
+          path: apps/desktop/src-tauri/target/release/codex-router-desktop.exe
+          if-no-files-found: error
