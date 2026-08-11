@@ -419,3 +419,21 @@ test("the Windows installer never calls .Trim() on an unguarded git read", () =>
     );
   }
 });
+
+test("the Windows wrapper exposes refresh-catalog and always restores routing", () => {
+  const source = readFileSync(path.join(root, "codex-router.ps1"), "utf8");
+  const branches = windowsSwitchBranches(source);
+  const body = branches.get("refresh-catalog");
+  assert.ok(body, "refresh-catalog must have a switch branch");
+
+  // catalog.mjs refuses to snapshot an already-merged catalog, so refreshing
+  // while routing is live silently reuses the stale cache.
+  assert.match(body, /config-manager\.mjs.*disable/s);
+
+  // The restore has to sit in a finally. An interrupted refresh that left the
+  // router disabled takes every routed model out of the picker, which is
+  // indistinguishable from the catalog having been wiped.
+  const finallyIndex = body.indexOf("finally");
+  assert.notEqual(finallyIndex, -1, "the disable must be undone in a finally block");
+  assert.match(body.slice(finallyIndex), /enable/);
+});

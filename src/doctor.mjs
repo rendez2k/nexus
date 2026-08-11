@@ -5,7 +5,12 @@ import path from "node:path";
 import { validCallerSecret } from "./caller-auth.mjs";
 import { codexAuthStatus, findCodexBinary } from "./codex-binary.mjs";
 import { routedCodexAgentStatus } from "./codex-agent-catalog.mjs";
-import { privateFileIsProtected } from "./file-security.mjs";
+import {
+  PROTECTION_PROTECTED,
+  PROTECTION_UNKNOWN,
+  privateFileIsProtected,
+  privateFileProtection,
+} from "./file-security.mjs";
 import { grokCliPreflight } from "./grok-cli.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
@@ -263,15 +268,18 @@ add(
 const configMode = existsSync(CONFIG_PATH)
   ? statSync(CONFIG_PATH).mode & 0o777
   : undefined;
-const configProtected = privateFileIsProtected(CONFIG_PATH);
+const configProtection = privateFileProtection(CONFIG_PATH);
+const configProtected = configProtection === PROTECTION_PROTECTED;
 add(
-  configProtected ? "ok" : "fail",
+  configProtected ? "ok" : configProtection === PROTECTION_UNKNOWN ? "warn" : "fail",
   "Codex config privacy",
-  configMode === undefined
-    ? "missing"
-    : process.platform === "win32"
-      ? "current-user Windows ACL"
-      : `mode ${configMode.toString(8)}`,
+  configProtection === PROTECTION_UNKNOWN
+    ? "could not read the ACL; rerun before assuming the file is exposed"
+    : configMode === undefined
+      ? "missing"
+      : process.platform === "win32"
+        ? "current-user Windows ACL"
+        : `mode ${configMode.toString(8)}`,
   "Run ./bin/doctor --fix; the managed router URL contains a local caller capability.",
 );
 

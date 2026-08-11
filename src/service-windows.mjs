@@ -211,15 +211,75 @@ function waitForTaskToStop() {
   }
 }
 
+function listeningPid(port) {
+  try {
+    const output = execFileSync("netstat.exe", ["-ano", "-p", "tcp"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    for (const line of output.split(/\r?\n/)) {
+      const columns = line.trim().split(/\s+/);
+      if (columns.length < 5) continue;
+      const [, local, , state, pid] = columns;
+      if (state !== "LISTENING" || !local.endsWith(`:${port}`)) continue;
+      const parsed = Number(pid);
+      if (Number.isInteger(parsed) && parsed > 0) return parsed;
+    }
+  } catch {
+    // No netstat, no reclaim; the caller falls back to the task state alone.
+  }
+  return undefined;
+}
+
+function imageName(pid) {
+  try {
+    return execFileSync("tasklist.exe", ["/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .split(",")[0]
+      .replaceAll('"', "")
+      .trim()
+      .toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+// `schtasks /End` stops the task's own process, but the launcher starts the
+// router detached, so node outlives it and keeps the port. The task then reads
+// Ready while the router is still listening, the next /Run cannot bind, and it
+// drops straight back to Ready. Nothing reports an error, so an install can sit
+// unsupervised for as long as the orphan lives - which is why a stop has to be
+// confirmed against the port and not against the task state that proxies it.
+function reclaimRouterPort() {
+  const deadline = Date.now() + TASK_STOP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const pid = listeningPid(PORTS.router);
+    if (pid === undefined) return;
+    // Only ever terminate our own runtime. Anything else holding this port is a
+    // competing router or an unrelated process, which is doctor's "Router
+    // ownership" check to report rather than ours to kill.
+    if (imageName(pid) !== "node.exe") return;
+    try {
+      execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {
+      return;
+    }
+    sleep(TASK_STOP_POLL_MS);
+  }
+}
+
 function endTask() {
   try {
     schtasks(["/End", "/TN", taskName], { quiet: true });
+    waitForTaskToStop();
   } catch {
     // The task may not exist, or may not be running; either way there is no
-    // instance left to wait for.
-    return;
+    // instance left to wait for. An orphan can outlive a task that is already
+    // gone, so the port is still reclaimed below.
   }
-  waitForTaskToStop();
+  reclaimRouterPort();
 }
 
 // Only a task that still exists can be started. `Register-ScheduledTask -Force`

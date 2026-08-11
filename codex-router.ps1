@@ -9,7 +9,7 @@ $Arguments = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @(
 $Commands = @(
   "setup", "install", "doctor", "status", "providers", "provider-key", "enable",
   "disable", "uninstall", "update", "rollback", "support-bundle",
-  "smoke-test", "start", "test-model", "discover-models"
+  "smoke-test", "start", "test-model", "discover-models", "refresh-catalog"
 )
 if ($Command -notin $Commands) {
   throw "Unknown command '$Command'. Choose: $($Commands -join ', ')."
@@ -66,6 +66,32 @@ switch ($Command) {
   "start" { Invoke-RouterNode "src\start.mjs" $Arguments }
   "test-model" { Invoke-RouterNode "src\compatibility-test.mjs" $Arguments }
   "discover-models" { Invoke-RouterNode "src\model-discovery.mjs" $Arguments }
+  "refresh-catalog" {
+    # The native capture has to happen with the router disabled: catalog.mjs
+    # refuses to snapshot an already-merged catalog, so refreshing while routing
+    # is live silently reuses the stale cache. bin/refresh-catalog does this on
+    # POSIX; without it here the operation was four hand-typed commands.
+    #
+    # The finally block is the point of the command. An interrupted refresh that
+    # left the router disabled would take every routed model out of the picker
+    # and look exactly like the catalog having been wiped.
+    $status = & node (Join-Path $Root "src\config-manager.mjs") "status" | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw "config-manager.mjs status exited with status $LASTEXITCODE." }
+    $restore = $status.mode -eq "router"
+    try {
+      if ($restore) { Invoke-RouterNode "src\config-manager.mjs" @("disable") | Out-Null }
+      Invoke-RouterNode "src\catalog.mjs" (@("--refresh-native", "--bundled-native") + $Arguments)
+    } finally {
+      if ($restore) {
+        # Restoring matters more than the refresh succeeding, so a failure here
+        # is reported rather than thrown - a throw inside finally would replace
+        # the original error and hide why the refresh failed.
+        try { Invoke-RouterNode "src\config-manager.mjs" @("enable") | Out-Null }
+        catch { Write-Warning "Could not re-enable routing: $_. Run: node src\config-manager.mjs enable" }
+      }
+    }
+    Write-Output "Native and external model catalogs refreshed. Fully quit and reopen Codex."
+  }
 }
 
 exit 0
