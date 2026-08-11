@@ -1,5 +1,7 @@
 # Nexus icon set
 
+![The Nexus icon set](preview.png)
+
 The mark is a junction: one stem in at the bottom, fanning out to three
 provider nodes. Colours track [`../brand/tokens.css`](../brand/tokens.css),
 which is read off the desktop HUD so the icon and the widget stay one family —
