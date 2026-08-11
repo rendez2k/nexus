@@ -17,3 +17,6 @@ apps/desktop/src-tauri/icons/icon.icns
 # per-session runtime state, not source
 .omc/state/
 .omc/sessions/
+
+# plugin credentials, never tracked
+.claude/last30days.env

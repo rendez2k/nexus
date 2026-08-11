@@ -1,13 +1,20 @@
 {
+  "enabledPlugins": {
+    "watch@claude-video": true,
+    "last30days@last30days-skill": true
+  },
   "extraKnownMarketplaces": {
     "claude-video": {
       "source": {
         "source": "github",
         "repo": "bradautomates/claude-video"
       }
+    },
+    "last30days-skill": {
+      "source": {
+        "source": "github",
+        "repo": "mvanhorn/last30days-skill"
+      }
     }
-  },
-  "enabledPlugins": {
-    "watch@claude-video": true
   }
 }
