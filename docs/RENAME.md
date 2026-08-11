@@ -5,16 +5,27 @@ user *reads* has changed, and nothing a running install *depends on* has.
 
 ## What changed
 
-- `TARGET_DISPLAY_NAME` in `src/paths.mjs` — the single constant every CLI and
-  UI surface renders. This is the one that matters.
 - All prose: `README.md`, `docs/`, `AGENTS.md`, `CLAUDE.md`, `SECURITY.md`,
   issue templates, code comments.
-- The log prefix, `[codex-router] ...` to `[nexus] ...`, and the tests that
-  assert on it.
-- The service label rendered in `bin/status` output (`src/start.mjs`).
+- The log prefix, `[codex-router] ...` to `[nexus] ...`, in `router.log` and in
+  the tests that assert on it.
+- `FRONTEND.label` in `src/start.mjs`, which names the process in startup and
+  health-check failure messages ("Nexus exited before becoming healthy").
+- The JSON `Content-Type` rejection message in `src/router.mjs`.
+- `TARGET_DISPLAY_NAME` in `src/paths.mjs`. Note its actual reach: it is read
+  in exactly one place, `src/service-linux.mjs`, as the systemd unit
+  `Description`. On Windows and macOS it renders nowhere.
 - `package.json` `name`, `codex-model-router` to `nexus`.
 - A new icon set under `assets/icon/`, with shared brand tokens in
   `assets/brand/tokens.css`.
+
+## What this does *not* change on screen
+
+The model picker entries come from each config's `displayName` field, not from
+any of the above, so the rename does not alter a single row in it. Neither the
+Windows service, the tray, nor the Codex UI displays the product name today.
+On Windows the rename is visible only in `router.log`, in startup/health error
+text, and in the documentation.
 
 ## What did not change, and why
 
