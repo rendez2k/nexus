@@ -1,15 +1,49 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Nexus">
+  <title>Nexus</title>
+  <!-- A junction: one stem in at the bottom, fanning out to providers.
+       Node angles are 90 / -30 / -150 about the hub, which sits at cy = 256 -
+       R/4 so the uneven triradiate mass still optically centres.
+       Colours are the HUD's own, via assets/brand/tokens.css. The mark runs
+       blue at the stem to cyan at the branches, matching the direction of the
+       HUD's `signal` gradient. -->
   <defs>
-    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#151b25"/>
-      <stop offset="1" stop-color="#090c12"/>
+    <linearGradient id="nx-bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#131922"/>
+      <stop offset="1" stop-color="#0D1118"/>
     </linearGradient>
-    <linearGradient id="signal" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0" stop-color="#5a8cff"/>
-      <stop offset="1" stop-color="#82e6ff"/>
+    <!-- userSpaceOnUse, not the default objectBoundingBox: the vertical stem
+         has a zero-width bbox, and an objectBoundingBox gradient on a
+         degenerate box is undefined - renderers drop the path. It also makes
+         the gradient one sweep across the whole mark instead of restarting
+         per element. -->
+    <linearGradient id="nx-mark" gradientUnits="userSpaceOnUse"
+                    x1="150" y1="390" x2="390" y2="130">
+      <stop offset="0" stop-color="#76A5FF"/>
+      <stop offset="1" stop-color="#7DE2FF"/>
     </linearGradient>
+    <radialGradient id="nx-glow" cx="0.5" cy="0.44" r="0.5">
+      <stop offset="0" stop-color="#76A5FF" stop-opacity="0.34"/>
+      <stop offset="0.6" stop-color="#76A5FF" stop-opacity="0.09"/>
+      <stop offset="1" stop-color="#76A5FF" stop-opacity="0"/>
+    </radialGradient>
   </defs>
-  <rect x="24" y="24" width="464" height="464" rx="128" fill="url(#surface)"/>
-  <path d="M118 314l74-76 61 45 140-128" fill="none" stroke="url(#signal)" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="393" cy="155" r="29" fill="#82e6ff"/>
+
+  <rect width="512" height="512" rx="114" fill="url(#nx-bg)"/>
+  <circle cx="256" cy="240" r="196" fill="url(#nx-glow)"/>
+  <!-- hairline echoing the HUD card edge: the line token, white at 8.5% -->
+  <rect x="3" y="3" width="506" height="506" rx="111" fill="none"
+        stroke="#FFFFFF" stroke-opacity="0.085" stroke-width="6"/>
+
+  <g stroke="url(#nx-mark)" stroke-width="27" stroke-linecap="round" fill="none">
+    <path d="M256 223 L256 355"/>
+    <path d="M256 223 L370.3 157"/>
+    <path d="M256 223 L141.7 157"/>
+  </g>
+
+  <g fill="url(#nx-mark)">
+    <circle cx="256" cy="355" r="38"/>
+    <circle cx="370.3" cy="157" r="38"/>
+    <circle cx="141.7" cy="157" r="38"/>
+    <circle cx="256" cy="223" r="58"/>
+  </g>
 </svg>

@@ -36,6 +36,10 @@ node assets/icon/build-icons.mjs
   invert the image for light and dark menu bars.
 - `tray/nexus-tray-white.png` + `@2x` — Windows/Linux dark themes
 - `tray/nexus-tray.ico` — Windows tray
+- `apps/desktop/src-tauri/icons/{32x32,128x128,128x128@2x,icon}.png`,
+  `icon.ico`, `source.svg` — the desktop tray app. These filenames are fixed by
+  the `bundle.icon` array in `tauri.conf.json`, so the build writes them in
+  place rather than having Tauri reference `assets/`.
 
 ## Two things that will bite you
 

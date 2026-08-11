@@ -57,4 +57,23 @@ await writeFile(
   await pngToIco(await Promise.all([16, 24, 32].map((s) => render(paint(tray, '#FFFFFF'), s)))),
 )
 
+// The Tauri bundler reads these five by the exact filenames listed in
+// apps/desktop/src-tauri/tauri.conf.json's bundle.icon array, so they are
+// written in place rather than referenced from assets/. source.svg is the
+// editable master the bundler ignores; keep it identical to nexus.svg.
+const tauriIcons = join(here, '..', '..', 'apps', 'desktop', 'src-tauri', 'icons')
+for (const [name, size] of [
+  ['32x32.png', 32],
+  ['128x128.png', 128],
+  ['128x128@2x.png', 256],
+  ['icon.png', 512],
+]) {
+  await writeFile(join(tauriIcons, name), await appAt(size))
+}
+await writeFile(
+  join(tauriIcons, 'icon.ico'),
+  await pngToIco(await Promise.all(ICO_SIZES.map(appAt))),
+)
+await writeFile(join(tauriIcons, 'source.svg'), app)
+
 console.log('icons rebuilt')

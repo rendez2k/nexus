@@ -159,7 +159,7 @@ fn main() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("failed to run Codex Model Router desktop companion");
+        .expect("failed to run Nexus desktop companion");
 }
 
 fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
@@ -175,7 +175,7 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&open, &toggle, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id("model-router")
-        .tooltip("Codex Model Router")
+        .tooltip("Nexus")
         .menu(&menu)
         .show_menu_on_left_click(cfg!(target_os = "linux"))
         .on_menu_event(|app, event| match event.id.as_ref() {

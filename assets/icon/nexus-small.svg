@@ -5,15 +5,15 @@
        nexus.svg to this size turns the mark to mush - render small PNGs here. -->
   <defs>
     <linearGradient id="nxs-bg" x1="0" y1="0" x2="0.35" y2="1">
-      <stop offset="0" stop-color="#151A22"/>
-      <stop offset="1" stop-color="#090B0F"/>
+      <stop offset="0" stop-color="#131922"/>
+      <stop offset="1" stop-color="#0D1118"/>
     </linearGradient>
     <!-- userSpaceOnUse: the vertical stem has a zero-width bbox, which makes
          an objectBoundingBox gradient undefined and drops the path. -->
     <linearGradient id="nxs-mark" gradientUnits="userSpaceOnUse"
-                    x1="2.5" y1="3" x2="13.5" y2="13">
-      <stop offset="0" stop-color="#6FB4FF"/>
-      <stop offset="1" stop-color="#3B8EF0"/>
+                    x1="3" y1="13" x2="13" y2="3">
+      <stop offset="0" stop-color="#76A5FF"/>
+      <stop offset="1" stop-color="#7DE2FF"/>
     </linearGradient>
   </defs>
 
