@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test *)",
+      "Read(//c/Users/rende/**)",
+      "Read(//c/Users/rende/.codex/**)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(Start-ScheduledTask *)",
+      "Bash(git stash *)",
+      "Bash(git merge *)",
+      "Bash(node --test test/native-alias.test.mjs test/legacy-migration.test.mjs test/tray-rebuild.test.mjs)",
+      "Bash(node --test test/legacy-migration.test.mjs)",
+      "Bash(node -e ' *)",
+      "Bash(node src/legacy-migration.mjs assert-clear)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(node --test test/legacy-migration.test.mjs test/provider-key.test.mjs test/installer-scripts.test.mjs)",
+      "Bash(node --test test/tray-rebuild.test.mjs test/config-manager.test.mjs)",
+      "Bash(node --test test/*.test.mj)",
+      "mcp__plugin_oh-my-claudecode_t__lsp_diagnostics",
+      "Bash(node --check src/legacy-migration.mjs)",
+      "Bash(node --check src/provider-key.mjs)",
+      "Bash(npx --no-install eslint src/legacy-migration.mjs src/provider-key.mjs)",
+      "Bash(cp install.ps1 /tmp/ps1.bak)",
+      "Bash(grep -v 'if \\($null -eq $Origin\\)' install.ps1)",
+      "Bash(grep -v 'if \\($null -eq $PreviousRevision\\)')",
+      "Bash(cp /tmp/mutant.ps1 install.ps1)",
+      "Bash(node --test test/installer-scripts.test.mjs)",
+      "Bash(cp /tmp/ps1.bak install.ps1)",
+      "Bash(echo \"exit=$?\")",
+      "PowerShell(Set-Location *)",
+      "Bash(node -e 'const m=require\\('\\\\''C:\\\\Users\\\\rende/.codex/codex-router/merged-models.json'\\\\''.replace\\(/\\\\\\\\/g,'\\\\''/'\\\\''\\)\\);const l=m.models||m.data||m;console.log\\('\\\\''entries:'\\\\'',Array.isArray\\(l\\)?l.length:Object.keys\\(l\\).length\\);console.log\\(\\(Array.isArray\\(l\\)?l:Object.values\\(l\\)\\).map\\(x=>x.id||x.slug||x.model\\).join\\('\\\\''\\\\n'\\\\''\\)\\);')",
+      "Bash(node \"C:/Users/rende/AppData/Local/Temp/claude/C--Users-rende-Desktop-ClientList-codex-router-patch/9e50f848-c1fa-46be-8dc4-fc6c6c491dbc/scratchpad/count.mjs\")",
+      "Bash(git fetch *)",
+      "Bash(git rev-list *)"
+    ]
+  }
+}

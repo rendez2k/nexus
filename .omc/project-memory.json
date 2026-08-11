@@ -1,0 +1,194 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1786351024214,
+  "projectRoot": "C:\\Users\\rende\\Desktop\\ClientList\\codex-router-patch",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": ">=22.19.0",
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "npm",
+    "runtime": "Node.js 22.19.0"
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "cd \"C:/Users/rende/Desktop/ClientList/codex-router-patch\" && npm test 2>&1 | grep -E \"^ℹ (tests|pass|fail|skipped)\"; echo \"--- working tree ---\"; git status --short",
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {
+      "check": "node scripts-check.mjs",
+      "test": "node --test test/*.test.mjs"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "bin",
+      "docs",
+      "scripts",
+      "src",
+      "test"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "apps": {
+      "path": "apps",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1786351024187,
+      "keyFiles": []
+    },
+    "bin": {
+      "path": "bin",
+      "purpose": "Executable scripts",
+      "fileCount": 24,
+      "lastAccessed": 1786351024188,
+      "keyFiles": [
+        "api-key",
+        "control",
+        "curate-models",
+        "disable",
+        "discover-models"
+      ]
+    },
+    "config": {
+      "path": "config",
+      "purpose": "Configuration files",
+      "fileCount": 0,
+      "lastAccessed": 1786351024195,
+      "keyFiles": []
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 7,
+      "lastAccessed": 1786351024196,
+      "keyFiles": [
+        "COMPATIBLE-APPS.md",
+        "DESKTOP-TRAY.md",
+        "DEVELOPMENT.md",
+        "HOW-IT-WORKS.md",
+        "INSTALL.md"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 3,
+      "lastAccessed": 1786351024196,
+      "keyFiles": [
+        "build-desktop-tray.ps1",
+        "build-desktop-tray.sh",
+        "build-macos-tray-app.sh"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 76,
+      "lastAccessed": 1786351024196,
+      "keyFiles": [
+        "api-forwarder.mjs",
+        "caller-auth.mjs",
+        "catalog.mjs",
+        "codex-account-usage.mjs",
+        "codex-agent-catalog.mjs"
+      ]
+    },
+    "test": {
+      "path": "test",
+      "purpose": "Test files",
+      "fileCount": 65,
+      "lastAccessed": 1786351024197,
+      "keyFiles": [
+        "anthropic-api-integration.test.mjs",
+        "caller-auth.test.mjs",
+        "catalog.test.mjs",
+        "codex-account-usage.test.mjs",
+        "codex-agent-catalog.test.mjs"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/provider-key.mjs",
+      "accessCount": 6,
+      "lastAccessed": 1786352535087,
+      "type": "file"
+    },
+    {
+      "path": "src/catalog.mjs",
+      "accessCount": 6,
+      "lastAccessed": 1786353662490,
+      "type": "file"
+    },
+    {
+      "path": "src/native-catalog-source.mjs",
+      "accessCount": 5,
+      "lastAccessed": 1786353462424,
+      "type": "file"
+    },
+    {
+      "path": "install.ps1",
+      "accessCount": 3,
+      "lastAccessed": 1786352498370,
+      "type": "file"
+    },
+    {
+      "path": "test/provider-key.test.mjs",
+      "accessCount": 3,
+      "lastAccessed": 1786352597470,
+      "type": "file"
+    },
+    {
+      "path": "test/native-catalog-source.test.mjs",
+      "accessCount": 2,
+      "lastAccessed": 1786353363763,
+      "type": "file"
+    },
+    {
+      "path": "src/config-manager.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1786351752214,
+      "type": "file"
+    },
+    {
+      "path": "src/control.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1786351914228,
+      "type": "file"
+    },
+    {
+      "path": "src/codex-binary.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1786352263246,
+      "type": "file"
+    },
+    {
+      "path": "test/legacy-migration.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1786352760507,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
