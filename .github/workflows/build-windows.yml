@@ -18,7 +18,11 @@ name: Build Windows tray
       - ".github/workflows/build-windows.yml"
 
 permissions:
-  contents: read
+  # write, not read: the last step publishes the executable to the rolling
+  # `tray-latest` prerelease so scripts/windows/nexus-tray.ps1 can fetch it
+  # over a plain URL. Actions artifacts need an authenticated request, which
+  # would mean putting a token in the updater script.
+  contents: write
 
 jobs:
   build:
@@ -48,3 +52,26 @@ jobs:
           # renaming it would break the router's tray lookup. See docs/RENAME.md.
           path: apps/desktop/src-tauri/target/release/codex-router-desktop.exe
           if-no-files-found: error
+
+      # A single rolling prerelease, replaced in place on every run, rather
+      # than a release per build. The tag stays put so the updater script can
+      # hard-code one URL. Skipped on pull requests.
+      - name: Publish to the rolling tray-latest release
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          exe=apps/desktop/src-tauri/target/release/codex-router-desktop.exe
+          sha256sum "$exe" | awk '{print $1}' > codex-router-desktop.exe.sha256
+          notes="Rolling build of the Windows tray.
+
+          Branch \`${GITHUB_REF_NAME}\`, commit \`${GITHUB_SHA}\`, run [${GITHUB_RUN_ID}](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}).
+
+          Replaced on every build. Unsigned, so SmartScreen will warn on first run.
+          \`scripts/windows/nexus-tray.ps1\` downloads from here."
+          gh release view tray-latest >/dev/null 2>&1 || gh release create tray-latest \
+            --prerelease --title "Nexus tray (latest build)" --notes "$notes" --target "$GITHUB_SHA"
+          gh release upload tray-latest "$exe" codex-router-desktop.exe.sha256 --clobber
+          gh release edit tray-latest --notes "$notes"

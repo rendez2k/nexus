@@ -114,6 +114,41 @@ Start-Process .\apps\desktop\src-tauri\target\release\codex-router-desktop.exe
 Pass `-BinaryOnly` for an unbundled executable. Installer artifacts are written
 under `apps\desktop\src-tauri\target\release\bundle` by a full build.
 
+## Windows without a toolchain
+
+Building locally needs Node, npm and cargo. If you would rather not install
+Rust, take the CI build instead:
+
+```powershell
+.\scripts\windows\nexus-tray.ps1
+```
+
+or double-click `scripts\windows\Nexus Tray.bat`. It pulls the executable from
+the rolling `tray-latest` prerelease that `.github/workflows/build-windows.yml`
+publishes, installs it to `%LOCALAPPDATA%\Nexus\tray`, and starts it. Re-running
+it is the update: the download is compared by hash and only replaces the local
+copy when the build has actually changed. Pass `-NoLaunch` to update in place.
+
+For a Desktop shortcut carrying the Nexus icon, run this once, adjusting the
+checkout path:
+
+```powershell
+$checkout = "$env:USERPROFILE\Documents\nexus"
+$link = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:USERPROFILE\Desktop\Nexus Tray.lnk")
+$link.TargetPath = "$checkout\scripts\windows\Nexus Tray.bat"
+$link.WorkingDirectory = "$checkout\scripts\windows"
+$link.IconLocation = "$checkout\assets\icon\nexus.ico"
+$link.Save()
+```
+
+Shortcut rather than a copy of the `.bat`: the batch file calls the PowerShell
+script sitting next to it, so moving it on its own breaks that reference.
+
+This route deliberately bypasses `bin/model-router-tray`, which fingerprints
+the tray's source files and compares them against a stamp beside the binary. A
+downloaded build always reads as stale to it, so it would try to rebuild from
+source - exactly the toolchain you were avoiding.
+
 The app discovers the router checkout from `MODEL_ROUTER_SOURCE_ROOT`, a saved
 bundle pointer, the source tree during development, or the standard install
 location (`%LOCALAPPDATA%\codex-router` on Windows and
