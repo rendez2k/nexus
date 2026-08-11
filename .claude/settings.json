@@ -1,7 +1,8 @@
 {
   "enabledPlugins": {
     "watch@claude-video": true,
-    "last30days@last30days-skill": true
+    "last30days@last30days-skill": true,
+    "humanizer@humanizer": true
   },
   "extraKnownMarketplaces": {
     "claude-video": {
@@ -14,6 +15,12 @@
       "source": {
         "source": "github",
         "repo": "mvanhorn/last30days-skill"
+      }
+    },
+    "humanizer": {
+      "source": {
+        "source": "github",
+        "repo": "blader/humanizer"
       }
     }
   }
