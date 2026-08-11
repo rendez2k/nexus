@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "openrouter/qwen3.7-plus",
+      "gatewayModel": "openrouter-qwen3-7-plus",
+      "upstreamModel": "qwen/qwen3.7-plus",
+      "provider": "openrouter",
+      "listed": true,
+      "displayName": "Qwen3.7 Plus (OpenRouter)",
+      "description": "Qwen3.7 Plus through OpenRouter, the balanced tier with a 1M context window.",
+      "priority": 68,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive deep reasoning"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 850000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "auto-tool-choice",
+      "compHash": "openrouter-qwen3-7-plus-v1"
+    }
+  ]
+}

@@ -100,6 +100,12 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go-responses/gpt-5.6-luna",
       "openrouter/deepseek-v4-flash",
       "openrouter/deepseek-v4-pro",
+      "openrouter/grok-4.5",
+      "openrouter/muse-spark-1.1",
+      "openrouter/muse-spark-1.2",
+      "openrouter/qwen3.7-max",
+      "openrouter/qwen3.7-plus",
+      "openrouter/qwen3.8-max",
       "qwen-plan/deepseek-v4-flash-0731",
       "qwen-plan/deepseek-v4-pro",
       "qwen-plan/glm-5.2",
@@ -358,27 +364,54 @@ test("deprecated DeepSeek aliases remain routable but stay out of the picker", (
 // parameter is DeepSeek's own and absent from OpenRouter's OpenAI-shaped
 // surface, and their upstream ids must stay OpenRouter's namespaced ids rather
 // than the bare ids the direct DeepSeek provider sends.
-test("OpenRouter DeepSeek models route as a reseller of the upstream model", () => {
+// Each OpenRouter entry, mapped to the id OpenRouter itself publishes and to
+// the slug of the direct provider selling the same model. The direct slug is
+// what pins the priority ordering below.
+const OPENROUTER_RESALE = new Map([
+  ["openrouter/deepseek-v4-flash", ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"]],
+  ["openrouter/deepseek-v4-pro", ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro"]],
+  ["openrouter/grok-4.5", ["x-ai/grok-4.5", "grok-api/grok-4.5"]],
+  ["openrouter/muse-spark-1.1", ["meta/muse-spark-1.1", "meta/muse-spark-1.1"]],
+  ["openrouter/muse-spark-1.2", ["meta/muse-spark-1.2", "meta/muse-spark-1.2"]],
+  ["openrouter/qwen3.7-max", ["qwen/qwen3.7-max", "qwen-plan/qwen3.7-max"]],
+  ["openrouter/qwen3.7-plus", ["qwen/qwen3.7-plus", "qwen-plan/qwen3.7-plus"]],
+  ["openrouter/qwen3.8-max", ["qwen/qwen3.8-max", "qwen-plan/qwen3.8-max"]],
+]);
+
+test("OpenRouter models route as a reseller of the upstream model", () => {
   const models = LISTED_MODELS.filter(({ provider }) => provider === "openrouter");
   assert.deepEqual(
-    models.map(({ slug, upstreamModel }) => [slug, upstreamModel]),
-    [
-      ["openrouter/deepseek-v4-flash", "deepseek/deepseek-v4-flash"],
-      ["openrouter/deepseek-v4-pro", "deepseek/deepseek-v4-pro"],
-    ],
+    new Map(models.map(({ slug, upstreamModel }) => [slug, upstreamModel])),
+    new Map([...OPENROUTER_RESALE].map(([slug, [upstream]]) => [slug, upstream])),
   );
   for (const model of models) {
+    // OpenRouter presents one OpenAI-shaped surface for every model it resells,
+    // so none of these may borrow a native profile such as deepseek-thinking or
+    // xai-reasoning, whose parameters are absent from it.
     assert.equal(model.requestProfile, "auto-tool-choice", model.slug);
     assert.equal(model.defaultEffort, "high", model.slug);
+    // Text-only: OpenRouter's per-model image support is unconfirmed for these,
+    // and the vision bridge covers text-only models anyway.
     assert.deepEqual(model.inputModalities, ["text"], model.slug);
-    assert.equal(model.contextWindow, 1_048_576, model.slug);
-    assert.equal(model.autoCompact, 900_000, model.slug);
     // Unproven for native v2 collaboration, so conservative v1 behavior stands.
     assert.equal(model.multiAgentVersion, undefined, model.slug);
-    // The direct DeepSeek entries hold the low priorities; a reseller must not
-    // outrank them and displace the picker's spawn-override subset.
-    const direct = MODEL_BY_SLUG.get(model.slug.replace("openrouter/", "deepseek/"));
+    // Upstream ids stay OpenRouter's namespaced ids, never the bare id the
+    // direct provider sends.
+    assert.ok(model.upstreamModel.includes("/"), model.slug);
+    // Direct entries hold the low priorities; a reseller must not outrank them
+    // and displace the picker's spawn-override subset.
+    const direct = MODEL_BY_SLUG.get(OPENROUTER_RESALE.get(model.slug)[1]);
+    assert.ok(direct, `${model.slug} has no direct counterpart`);
     assert.ok(model.priority > direct.priority, model.slug);
+  }
+});
+
+// A reseller advertising a larger window than it can serve silently truncates,
+// so these track what OpenRouter publishes rather than the direct provider's.
+test("OpenRouter context windows leave headroom before auto-compaction", () => {
+  for (const model of LISTED_MODELS.filter(({ provider }) => provider === "openrouter")) {
+    assert.ok(model.autoCompact < model.contextWindow, model.slug);
+    assert.ok(model.autoCompact >= model.contextWindow * 0.8, model.slug);
   }
 });
 

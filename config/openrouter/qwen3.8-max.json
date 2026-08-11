@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "openrouter/qwen3.8-max",
+      "gatewayModel": "openrouter-qwen3-8-max",
+      "upstreamModel": "qwen/qwen3.8-max",
+      "provider": "openrouter",
+      "listed": true,
+      "displayName": "Qwen3.8 Max (OpenRouter)",
+      "description": "Qwen3.8 Max through OpenRouter, the flagship tier with a 1M context window.",
+      "priority": 66,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive deep reasoning"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 850000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "auto-tool-choice",
+      "compHash": "openrouter-qwen3-8-max-v1"
+    }
+  ]
+}
