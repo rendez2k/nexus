@@ -1,0 +1,35 @@
+/* Nexus brand tokens.
+ *
+ * Single source of truth for the desktop HUD, the tray, and the icon set.
+ * Values are read off the shipped HUD so the icon sits in the same family as
+ * the widget: near-black surface, white primary, steel-blue provider label,
+ * one azure accent carrying the sparkline.
+ *
+ * assets/brand/tokens.json mirrors this for non-CSS consumers (the icon build
+ * script, Tauri config). Change both together. */
+
+:root {
+  /* surfaces */
+  --nexus-surface: #0e1116; /* HUD card background */
+  --nexus-surface-deep: #090b0f; /* icon backdrop, bottom of gradient */
+  --nexus-surface-lift: #151a22; /* icon backdrop, top of gradient */
+  --nexus-border: #232833; /* card hairline, divider rules */
+
+  /* type */
+  --nexus-text: #f2f4f8; /* "Idle", "11k tokens", the big counter */
+  --nexus-text-provider: #5f7c9e; /* "DeepSeek API" */
+  --nexus-text-muted: #6b7280; /* "today", "weekly", "Last 7 days" */
+
+  /* accent */
+  --nexus-accent: #3b8ef0; /* sparkline stroke, active state */
+  --nexus-accent-bright: #6fb4ff; /* gradient highlight, hover */
+  --nexus-accent-glow: rgb(59 142 240 / 42%); /* bloom under the mark */
+
+  /* status ring, top-left of the HUD */
+  --nexus-status-idle: #c8cdd6;
+  --nexus-status-active: #3b8ef0;
+
+  /* geometry */
+  --nexus-radius-card: 18px;
+  --nexus-radius-icon: 22.3%; /* 114/512, the app icon squircle */
+}

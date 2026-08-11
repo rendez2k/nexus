@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" fill="none" role="img" aria-label="Nexus">
+  <title>Nexus mark</title>
+  <!-- Monochrome mark on a transparent ground. Inherits the surrounding
+       text colour, so it drops into light or dark UI unchanged. -->
+  <g stroke="currentColor" stroke-width="13.5" stroke-linecap="round">
+    <path d="M128 111.5 L128 177.5"/>
+    <path d="M128 111.5 L185.2 78.5"/>
+    <path d="M128 111.5 L70.8 78.5"/>
+  </g>
+  <g fill="currentColor">
+    <circle cx="128" cy="177.5" r="19"/>
+    <circle cx="185.2" cy="78.5" r="19"/>
+    <circle cx="70.8" cy="78.5" r="19"/>
+    <circle cx="128" cy="111.5" r="29"/>
+  </g>
+</svg>

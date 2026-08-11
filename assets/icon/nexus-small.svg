@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" role="img" aria-label="Nexus">
+  <title>Nexus</title>
+  <!-- The app icon at 16-32px: same junction, but on the tray variant's
+       fattened geometry, inset to clear the rounded corners. Downscaling
+       nexus.svg to this size turns the mark to mush - render small PNGs here. -->
+  <defs>
+    <linearGradient id="nxs-bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#151A22"/>
+      <stop offset="1" stop-color="#090B0F"/>
+    </linearGradient>
+    <!-- userSpaceOnUse: the vertical stem has a zero-width bbox, which makes
+         an objectBoundingBox gradient undefined and drops the path. -->
+    <linearGradient id="nxs-mark" gradientUnits="userSpaceOnUse"
+                    x1="2.5" y1="3" x2="13.5" y2="13">
+      <stop offset="0" stop-color="#6FB4FF"/>
+      <stop offset="1" stop-color="#3B8EF0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="16" height="16" rx="3.6" fill="url(#nxs-bg)"/>
+
+  <g stroke="url(#nxs-mark)" stroke-width="1.25" stroke-linecap="round" fill="none">
+    <path d="M8 6.57 L8 12.29"/>
+    <path d="M8 6.57 L12.95 3.71"/>
+    <path d="M8 6.57 L3.05 3.71"/>
+  </g>
+  <g fill="url(#nxs-mark)">
+    <circle cx="8" cy="12.29" r="1.41"/>
+    <circle cx="12.95" cy="3.71" r="1.41"/>
+    <circle cx="3.05" cy="3.71" r="1.41"/>
+    <circle cx="8" cy="6.57" r="1.95"/>
+  </g>
+</svg>

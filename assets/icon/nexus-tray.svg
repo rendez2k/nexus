@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="none" role="img" aria-label="Nexus">
+  <title>Nexus tray mark</title>
+  <!-- Optically corrected 16px variant: thicker strokes, larger nodes and a
+       tighter hub than the full mark, so it survives a 16x16 tray slot with no
+       background behind it.
+       Do NOT generate tray PNGs by downscaling nexus.svg - use this. -->
+  <g stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+    <path d="M8 6.375 L8 12.875"/>
+    <path d="M8 6.375 L13.63 3.125"/>
+    <path d="M8 6.375 L2.37 3.125"/>
+  </g>
+  <g fill="currentColor">
+    <circle cx="8" cy="12.875" r="1.6"/>
+    <circle cx="13.63" cy="3.125" r="1.6"/>
+    <circle cx="2.37" cy="3.125" r="1.6"/>
+    <circle cx="8" cy="6.375" r="2.2"/>
+  </g>
+</svg>
