@@ -16,6 +16,7 @@ an active OpenRouter account. The endpoint is public and needs no key.
 | `grok-4.20-multi-agent.json` | `x-ai/grok-4.20-multi-agent` | 2,000,000 |
 | `grok-4.3.json` | `x-ai/grok-4.3` | 1,000,000 |
 | `grok-4.5.json` | `x-ai/grok-4.5` | 500,000 |
+| `grok-4.6.json` | `x-ai/grok-4.6` | 500,000 |
 | `grok-build-0.1.json` | `x-ai/grok-build-0.1` | 256,000 |
 | `muse-spark-1.1.json` | `meta/muse-spark-1.1` | 1,048,576 |
 | `muse-spark-1.2.json` | `meta/muse-spark-1.2` | 1,048,576 |
@@ -34,9 +35,11 @@ above are the ones that apply on this route.
   size: 900,000 at 1,048,576 (as `openrouter/deepseek-v4-pro`), 850,000 at
   1,000,000 (as `meta/muse-spark-1.1`), 440,000 at 500,000 (as
   `grok-api/grok-4.5`).
-- `priority` 65-70, from the free range between the existing OpenRouter block
+- `priority` 65-75, from the free range between the existing OpenRouter block
   (63-64) and 100. Every value ranks below its direct counterpart, which
-  `registry.test.mjs` asserts.
+  `registry.test.mjs` asserts. Within the Grok family the newest model ranks
+  highest: 4.6 took 65 and 4.5 moved to 75, since 4.6 supersedes it at the same
+  500k window.
 - `requestProfile` is `auto-tool-choice` throughout. OpenRouter exposes one
   OpenAI-shaped surface, so a native profile such as `xai-reasoning` or
   `qwen-plan` would send parameters that surface does not accept.
