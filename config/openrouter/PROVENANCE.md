@@ -12,7 +12,11 @@ an active OpenRouter account. The endpoint is public and needs no key.
 
 | Model file | `upstreamModel` | `contextWindow` |
 | --- | --- | --- |
+| `grok-4.20.json` | `x-ai/grok-4.20` | 2,000,000 |
+| `grok-4.20-multi-agent.json` | `x-ai/grok-4.20-multi-agent` | 2,000,000 |
+| `grok-4.3.json` | `x-ai/grok-4.3` | 1,000,000 |
 | `grok-4.5.json` | `x-ai/grok-4.5` | 500,000 |
+| `grok-build-0.1.json` | `x-ai/grok-build-0.1` | 256,000 |
 | `muse-spark-1.1.json` | `meta/muse-spark-1.1` | 1,048,576 |
 | `muse-spark-1.2.json` | `meta/muse-spark-1.2` | 1,048,576 |
 | `qwen3.7-max.json` | `qwen/qwen3.7-max` | 1,000,000 |
@@ -44,6 +48,20 @@ above are the ones that apply on this route.
   `reasoning_effort` through. This is the one field here not verified against
   OpenRouter itself. Confirm with `bin/test-model` before relying on the
   non-default rungs.
+
+## Not shipped, and why
+
+- `~x-ai/grok-latest` appears in the same response with a leading tilde, which
+  is not a plain model id. Whatever that prefix denotes on OpenRouter is
+  unconfirmed, and a floating "latest" alias would in any case change model
+  under a fixed slug without the catalog noticing.
+- `meta/muse-glimmer-30b` is a different model rather than a route to one this
+  repository already ships, so it belongs in a curation pass, not here.
+
+OpenRouter labels the Grok entries "SpaceXAI" while the direct provider is
+`grok-api` / xAI. The ids are what route, so the vendor label is noted rather
+than followed; display names stay "Grok N (OpenRouter)" for consistency with
+the rest of the picker.
 
 ## Deliberately conservative
 

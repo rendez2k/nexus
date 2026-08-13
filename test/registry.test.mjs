@@ -100,7 +100,11 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go-responses/gpt-5.6-luna",
       "openrouter/deepseek-v4-flash",
       "openrouter/deepseek-v4-pro",
+      "openrouter/grok-4.20-multi-agent",
+      "openrouter/grok-4.20",
+      "openrouter/grok-4.3",
       "openrouter/grok-4.5",
+      "openrouter/grok-build-0.1",
       "openrouter/muse-spark-1.1",
       "openrouter/muse-spark-1.2",
       "openrouter/qwen3.7-max",
@@ -366,11 +370,16 @@ test("deprecated DeepSeek aliases remain routable but stay out of the picker", (
 // than the bare ids the direct DeepSeek provider sends.
 // Each OpenRouter entry, mapped to the id OpenRouter itself publishes and to
 // the slug of the direct provider selling the same model. The direct slug is
-// what pins the priority ordering below.
+// what pins the priority ordering below; null means OpenRouter is the only way
+// this repository reaches the model, so there is nothing for it to outrank.
 const OPENROUTER_RESALE = new Map([
   ["openrouter/deepseek-v4-flash", ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"]],
   ["openrouter/deepseek-v4-pro", ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro"]],
+  ["openrouter/grok-4.20", ["x-ai/grok-4.20", null]],
+  ["openrouter/grok-4.20-multi-agent", ["x-ai/grok-4.20-multi-agent", null]],
+  ["openrouter/grok-4.3", ["x-ai/grok-4.3", null]],
   ["openrouter/grok-4.5", ["x-ai/grok-4.5", "grok-api/grok-4.5"]],
+  ["openrouter/grok-build-0.1", ["x-ai/grok-build-0.1", null]],
   ["openrouter/muse-spark-1.1", ["meta/muse-spark-1.1", "meta/muse-spark-1.1"]],
   ["openrouter/muse-spark-1.2", ["meta/muse-spark-1.2", "meta/muse-spark-1.2"]],
   ["openrouter/qwen3.7-max", ["qwen/qwen3.7-max", "qwen-plan/qwen3.7-max"]],
@@ -399,9 +408,12 @@ test("OpenRouter models route as a reseller of the upstream model", () => {
     // direct provider sends.
     assert.ok(model.upstreamModel.includes("/"), model.slug);
     // Direct entries hold the low priorities; a reseller must not outrank them
-    // and displace the picker's spawn-override subset.
-    const direct = MODEL_BY_SLUG.get(OPENROUTER_RESALE.get(model.slug)[1]);
-    assert.ok(direct, `${model.slug} has no direct counterpart`);
+    // and displace the picker's spawn-override subset. Where OpenRouter is the
+    // only route this repository has, there is no direct entry to rank against.
+    const directSlug = OPENROUTER_RESALE.get(model.slug)[1];
+    if (directSlug === null) continue;
+    const direct = MODEL_BY_SLUG.get(directSlug);
+    assert.ok(direct, `${model.slug} claims a direct counterpart ${directSlug} that is absent`);
     assert.ok(model.priority > direct.priority, model.slug);
   }
 });

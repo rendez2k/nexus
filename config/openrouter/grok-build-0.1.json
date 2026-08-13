@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "slug": "openrouter/grok-build-0.1",
+      "gatewayModel": "openrouter-grok-build-0-1",
+      "upstreamModel": "x-ai/grok-build-0.1",
+      "provider": "openrouter",
+      "listed": true,
+      "displayName": "Grok Build 0.1 (OpenRouter)",
+      "description": "Grok Build 0.1 through OpenRouter, a build-oriented model with a 256k context window.",
+      "priority": 74,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 256000,
+      "autoCompact": 225000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "auto-tool-choice",
+      "compHash": "openrouter-grok-build-0-1-v1"
+    }
+  ]
+}
