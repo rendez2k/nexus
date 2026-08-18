@@ -99,6 +99,20 @@ const ENTITLEMENT_PATTERNS = [
   /no api access/i,
 ];
 
+// Upstreams phrase "you must go and tick something" in their own words, so
+// these match the shape of the instruction rather than any one provider's
+// wording: a stated prerequisite, or a pointer at account settings.
+const ACCOUNT_ACTION_PATTERNS = [
+  /requires? you to complete/i,
+  /age (confirmation|verification)/i,
+  /(accept|agree to) [^.]*(terms|policy|policies)/i,
+  /(confirm|enable|complete)[^.]*\b(settings|preferences)\b/i,
+];
+
+function requiresAccountAction(detail) {
+  return ACCOUNT_ACTION_PATTERNS.some((pattern) => pattern.test(detail));
+}
+
 function isPlanEntitlement(detail) {
   return ENTITLEMENT_PATTERNS.some((pattern) => pattern.test(detail));
 }
@@ -119,6 +133,18 @@ function describeFailure({
   providerKind,
   retryAfterSeconds,
 }) {
+  // Ahead of everything else. A required account action is neither a bad
+  // credential nor a plan limit - the key works and the upstream is asking the
+  // account holder to tick something - but it arrives as a 403 and reads like
+  // both. OpenRouter gates some models behind an age confirmation this way,
+  // and answering it as "your credentials were rejected, re-run setup" sends
+  // people to re-enter a key that was never the problem.
+  if (status < 500 && requiresAccountAction(detail)) {
+    return {
+      type: "invalid_request_error",
+      message: `${providerName} accepted the credential but will not serve ${modelName} until an action is completed on your ${providerName} account. Re-running setup will not help; the upstream's own instruction follows.`,
+    };
+  }
   // Ahead of both the quota and the credential branches: an entitlement
   // failure is the only one of the three that neither a top-up nor a new key
   // can resolve, and its wording overlaps with both.
@@ -143,6 +169,10 @@ function describeFailure({
         message: `${providerName} rejected the OAuth session while serving ${modelName}. Sign in to ${providerName} again.`,
       };
     }
+    // 403 deliberately falls through to the credential wording: providers do
+    // use it for a rejected key ("Invalid API key provided"), so the status
+    // alone cannot separate the two. The detail is what distinguishes them,
+    // which is why the account-action branch above matches on that instead.
     return {
       type: "authentication_error",
       message: `${providerName} rejected the stored credentials while serving ${modelName}. Re-run codex-router setup to refresh them.`,

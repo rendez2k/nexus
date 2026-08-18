@@ -413,3 +413,47 @@ test("a genuine 403 credential rejection still says so", () => {
   assert.equal(translated.error.type, "authentication_error");
   assert.match(translated.error.message, /rejected the stored credentials/);
 });
+
+// The message that prompted this: OpenRouter gates some models behind an
+// account setting and answers with 403. Reporting that as rejected credentials
+// sends people to re-enter a key that was never the problem.
+test("a required account action is not reported as a credential failure", () => {
+  const translated = translateGatewayError({
+    status: 403,
+    bodyText: JSON.stringify({
+      error: {
+        message:
+          "This model requires you to complete the following before use: 18+ age confirmation. Confirm at https://openrouter.ai/settings/preferences.",
+      },
+    }),
+    modelName: "Muse Spark 1.2 (OpenRouter)",
+    providerName: "openrouter",
+    providerKind: "openai-compatible",
+  });
+  // Neither fix that would waste the operator's time may be suggested.
+  assert.doesNotMatch(translated.error.message, /rejected the stored credentials/);
+  assert.doesNotMatch(translated.error.message, /Re-run codex-router setup/);
+  assert.match(translated.error.message, /account/i);
+  // The upstream's own instruction is the thing to act on, so it has to survive
+  // into the message rather than be replaced by our summary.
+  assert.match(translated.error.message, /age confirmation/i);
+});
+
+// The status alone cannot separate the two: the same 403 carries both a bad
+// key and an account gate, so the detail is what decides which advice is given.
+test("403 advice is chosen by the detail, not the status", () => {
+  const forModel = (message) =>
+    translateGatewayError({
+      status: 403,
+      bodyText: JSON.stringify({ error: { message } }),
+      modelName: "Grok 4.6 (OpenRouter)",
+      providerName: "openrouter",
+      providerKind: "openai-compatible",
+    }).error.message;
+
+  assert.match(forModel("Invalid API key provided"), /rejected the stored credentials/);
+  assert.doesNotMatch(
+    forModel("You must accept the terms of service before using this model."),
+    /rejected the stored credentials/,
+  );
+});
