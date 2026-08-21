@@ -114,6 +114,19 @@ Start-Process .\apps\desktop\src-tauri\target\release\codex-router-desktop.exe
 Pass `-BinaryOnly` for an unbundled executable. Installer artifacts are written
 under `apps\desktop\src-tauri\target\release\bundle` by a full build.
 
+## Refreshing the model catalog
+
+```powershell
+.\codex-router.ps1 refresh-catalog
+```
+
+or `./bin/refresh-catalog` on POSIX. Both run `src/refresh-catalog.mjs`, which
+disables routing, recaptures Codex's native catalog, then restores routing -
+including when the refresh itself fails.
+
+Do not hand-run `catalog.mjs --refresh-native` with routing enabled: it refuses
+to snapshot an already-merged catalog and silently reuses the stale capture.
+
 ## Windows without a toolchain
 
 Building locally needs Node, npm and cargo. If you would rather not install

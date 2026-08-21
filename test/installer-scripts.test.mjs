@@ -420,20 +420,15 @@ test("the Windows installer never calls .Trim() on an unguarded git read", () =>
   }
 });
 
-test("the Windows wrapper exposes refresh-catalog and always restores routing", () => {
+test("the Windows wrapper delegates refresh-catalog rather than reimplementing it", () => {
   const source = readFileSync(path.join(root, "codex-router.ps1"), "utf8");
-  const branches = windowsSwitchBranches(source);
-  const body = branches.get("refresh-catalog");
+  const body = windowsSwitchBranches(source).get("refresh-catalog");
   assert.ok(body, "refresh-catalog must have a switch branch");
 
-  // catalog.mjs refuses to snapshot an already-merged catalog, so refreshing
-  // while routing is live silently reuses the stale cache.
-  assert.match(body, /config-manager\.mjs.*disable/s);
-
-  // The restore has to sit in a finally. An interrupted refresh that left the
-  // router disabled takes every routed model out of the picker, which is
-  // indistinguishable from the catalog having been wiped.
-  const finallyIndex = body.indexOf("finally");
-  assert.notEqual(finallyIndex, -1, "the disable must be undone in a finally block");
-  assert.match(body.slice(finallyIndex), /enable/);
+  // The disable/refresh/restore sequence belongs in src/refresh-catalog.mjs so
+  // both platforms run it and refresh-catalog.test.mjs covers the failure path.
+  // A PowerShell reimplementation drifts from the module and is untested.
+  assert.match(body, /refresh-catalog\.mjs/);
+  assert.doesNotMatch(body, /config-manager\.mjs/);
+  assert.doesNotMatch(body, /finally/);
 });
