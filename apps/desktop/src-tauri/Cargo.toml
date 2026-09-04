@@ -1,8 +1,8 @@
 [package]
 name = "codex-router-desktop"
 version = "0.4.0-beta.3"
-description = "Windows and Linux tray companion for Codex Model Router"
-authors = ["Codex Model Router contributors"]
+description = "Windows and Linux tray companion for Nexus"
+authors = ["Nexus contributors"]
 edition = "2021"
 rust-version = "1.77.2"
 

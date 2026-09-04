@@ -186,14 +186,14 @@ fn main() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("failed to run Codex Model Router desktop companion");
+        .expect("failed to run the Nexus desktop companion");
 }
 
 fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(
         app,
         "open",
-        tray_text("Open Model Router"),
+        tray_text("Open Nexus"),
         true,
         None::<&str>,
     )?;
@@ -208,7 +208,7 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&open, &toggle, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id("model-router")
-        .tooltip(tray_text("Codex Model Router"))
+        .tooltip(tray_text("Nexus"))
         .menu(&menu)
         .show_menu_on_left_click(cfg!(target_os = "linux"))
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -264,10 +264,12 @@ fn tray_text(english: &str) -> String {
         .to_ascii_lowercase();
     if language.starts_with("zh") || language.contains("zh_") {
         return match english {
-            "Open Model Router" => "打开模型路由".into(),
+            "Open Nexus" => "打开 Nexus".into(),
             "Toggle activity pill" => "切换活动胶囊".into(),
             "Quit" => "退出".into(),
-            "Codex Model Router" => "Codex 模型路由".into(),
+            // The product name is a proper noun and stays "Nexus" in every
+            // locale, so the tray tooltip needs no arm of its own -- the
+            // fallback below already returns it unchanged.
             _ => english.into(),
         };
     }
@@ -922,7 +924,7 @@ async fn run_json_command(
         run_control_json(&state, &borrowed, stdin.as_deref().map(str::as_bytes))
     })
     .await
-    .map_err(|_| "The Model Router command did not finish.".to_string())?
+    .map_err(|_| "The Nexus command did not finish.".to_string())?
 }
 
 async fn run_command_then_snapshot(state: RouterState, args: Vec<String>) -> Result<Value, String> {
@@ -932,7 +934,7 @@ async fn run_command_then_snapshot(state: RouterState, args: Vec<String>) -> Res
         run_control_json(&state, &["--json"], None)
     })
     .await
-    .map_err(|_| "The Model Router command did not finish.".to_string())?
+    .map_err(|_| "The Nexus command did not finish.".to_string())?
 }
 
 fn update_provider_selection(
@@ -963,7 +965,7 @@ fn run_control_json(
 ) -> Result<Value, String> {
     let output = run_control(state, args, stdin)?;
     serde_json::from_slice(&output)
-        .map_err(|_| "Model Router returned an unreadable response.".to_string())
+        .map_err(|_| "Nexus returned an unreadable response.".to_string())
 }
 
 fn run_control(
@@ -972,7 +974,7 @@ fn run_control(
     stdin: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
     let root = state.source_root.as_ref().ok_or_else(|| {
-        "Model Router was not found. Install it in the standard location or set MODEL_ROUTER_SOURCE_ROOT."
+        "Nexus was not found. Install it in the standard location or set MODEL_ROUTER_SOURCE_ROOT."
             .to_string()
     })?;
     let node = resolve_node().ok_or_else(|| {
@@ -1005,7 +1007,7 @@ fn run_control(
 
     let mut child = command
         .spawn()
-        .map_err(|_| "Could not start the Model Router control process.".to_string())?;
+        .map_err(|_| "Could not start the Nexus control process.".to_string())?;
     if let Some(input) = stdin {
         let mut pipe = child
             .stdin
@@ -1016,13 +1018,13 @@ fn run_control(
     }
     let output = child
         .wait_with_output()
-        .map_err(|_| "The Model Router control process did not finish.".to_string())?;
+        .map_err(|_| "The Nexus control process did not finish.".to_string())?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
         return Err(sanitize_error(&detail));
     }
     if output.stdout.len() > MAX_CONTROL_OUTPUT {
-        return Err("Model Router returned more data than the desktop app can display.".into());
+        return Err("Nexus returned more data than the desktop app can display.".into());
     }
     Ok(output.stdout)
 }
@@ -1463,7 +1465,7 @@ fn validate_vision_value(value: &str, label: &str) -> Result<(), String> {
 fn sanitize_error(raw: &str) -> String {
     let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
-        return "Model Router control command failed.".into();
+        return "Nexus control command failed.".into();
     }
     collapsed.chars().take(MAX_ERROR_LENGTH).collect()
 }

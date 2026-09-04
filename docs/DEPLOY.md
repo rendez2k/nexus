@@ -46,16 +46,23 @@ cd $env:LOCALAPPDATA\codex-router
 
 Write down the `SHOW ... ready` rows.
 
-**3. Stop the running router.** A live process holds port 4102, and an
+**3. Stop the running router.** A live process holds the router port, and an
 installer that cannot bind it leaves a task that reports Ready while never
 starting - the deadlock that once left a router running unsupervised for
 sixteen hours.
 
+Clear both port ranges. An install from before the BrlAPI-safe defaults binds
+4100-4103; this one binds 4200-4203, and a half-migrated machine has one of
+each.
+
 ```powershell
 .\codex-router.ps1 disable
-$routerPid = (Get-NetTCPConnection -LocalPort 4102 -State Listen -ErrorAction SilentlyContinue |
-  Select-Object -First 1).OwningProcess
-if ($routerPid) { Stop-Process -Id $routerPid -Force; Start-Sleep -Seconds 2 }
+foreach ($p in 4100,4101,4102,4103,4200,4201,4202,4203) {
+  $owner = (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -First 1).OwningProcess
+  if ($owner) { Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue }
+}
+Start-Sleep -Seconds 2
 Get-Process codex-router-desktop -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 
@@ -115,6 +122,55 @@ into a chat or a script.
 Finally, fully quit and reopen Codex. The routed models appear in the Codex
 surface, not in the ChatGPT chat tab, which lists OpenAI's own models and
 ignores the router entirely.
+
+## When the picker looks right but the tray says "Router offline"
+
+These two are not in conflict, and it is worth knowing why before you spend an
+afternoon on it. **The model picker reads a file.** Codex builds that list from
+the managed block in `config.toml` and from `merged-models.json`, both of which
+the installer writes before it ever starts the service. So a picker full of
+routed models proves the *configuration* landed. It says nothing about whether
+anything is listening, and selecting one of those models will fail at the first
+request.
+
+"Router offline" in the tray, and the installer's
+`Router did not become healthy within 300 seconds: fetch failed`, are the same
+fact reported twice: nothing answered `http://127.0.0.1:4202/health`. `fetch
+failed` is Node's wording for a connection that was refused outright, so the
+question is why the process is not there.
+
+The scheduled task launches a VBScript, which launches a CMD wrapper, which
+appends everything to one log. That log is the only place the answer is:
+
+```powershell
+Get-Content $env:USERPROFILE\.codex\codex-router\router.log -Tail 40
+```
+
+Read it by timestamp, not by content. The log lives in the state directory,
+which is deliberately shared across installs, so a `ready` line near the end can
+easily belong to yesterday's router on port 4102. What you want is whether
+anything was appended at the moment the installer was waiting.
+
+Three outcomes, in the order they are worth checking:
+
+- **Nothing new was appended.** The task never ran the wrapper. Confirm with
+  `schtasks /Query /TN "Codex Router" /V /FO LIST` - it still registers under
+  its old name on purpose - and look at `Last Run Time` and `Last Result`.
+- **The log ends in a Python or LiteLLM traceback.** The gateway on 4200 is what
+  failed; the router waits for it and never opens 4202. `.\codex-router.ps1
+  doctor` names the missing dependency.
+- **The log ends in a proxy or connect error.** Check with
+  `Get-ChildItem env: | Where-Object Name -match 'PROXY'`. Node only honours
+  those variables when the opt-in is set, and a proxy that captures loopback
+  traffic makes the health probe fail against a router that is running perfectly
+  well. `serviceProxyOptInProblem` in `src/proxy-environment.mjs` reports the
+  mismatched half of that.
+
+The Connections tab is a separate question and usually a false alarm: it lists
+every provider the registry knows, connected or not, in alphabetical order. Four
+rows reading "Add key" at the top of the list is what an untouched A-to-C looks
+like, not evidence that credentials were lost. Scroll to your own providers, or
+settle it from the command line with `.\codex-router.ps1 providers`.
 
 ## The tray
 
