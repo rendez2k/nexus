@@ -45,7 +45,7 @@ jobs:
       # docs/DESKTOP-TRAY.md tells you to launch it directly. Swap to
       # `npm run build --prefix apps/desktop` if you ever want the installers.
       - run: npm run build:binary --prefix apps/desktop
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nexus-tray-windows-x64
           # Named for the Cargo [[bin]], which is still codex-router-desktop -
