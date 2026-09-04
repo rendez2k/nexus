@@ -99,29 +99,86 @@ const ENTITLEMENT_PATTERNS = [
   /no api access/i,
 ];
 
-// Upstreams phrase "you must go and tick something" in their own words, so
-// these match the shape of the instruction rather than any one provider's
-// wording: a stated prerequisite, or a pointer at account settings.
-const ACCOUNT_ACTION_PATTERNS = [
-  /requires? you to complete/i,
-  /age (confirmation|verification)/i,
-  /(accept|agree to) [^.]*(terms|policy|policies)/i,
-  /(confirm|enable|complete)[^.]*\b(settings|preferences)\b/i,
-];
-
-function requiresAccountAction(detail) {
-  return ACCOUNT_ACTION_PATTERNS.some((pattern) => pattern.test(detail));
-}
-
 function isPlanEntitlement(detail) {
   return ENTITLEMENT_PATTERNS.some((pattern) => pattern.test(detail));
 }
 
 function isOutOfUsage(detail, errorType) {
-  if (typeof errorType === "string" && /quota|billing|resource_exhausted/i.test(errorType)) {
+  if (
+    typeof errorType === "string" &&
+    /quota|billing|resource_exhausted|freeusagelimiterror/i.test(errorType)
+  ) {
     return true;
   }
   return QUOTA_PATTERNS.some((pattern) => pattern.test(detail));
+}
+
+// Ollama's MLX runner returns this deterministic request-size failure as an
+// HTTP 500, and LiteLLM currently wraps it as APIConnectionError. Left as a
+// server error, Codex retries for minutes and eventually replaces the useful
+// cause with its generic high-demand message. The wording is emitted by
+// Ollama's runner after it has rendered and tokenized the complete chat
+// template, so it is authoritative context evidence even though the status is
+// not.
+const CONTEXT_LENGTH_PATTERNS = [
+  /input length \((\d+) tokens\) exceeds the model's maximum context length \((\d+) tokens\)/i,
+  /input after truncation exceeds (?:the )?maximum context length/i,
+  /maximum context length (?:is|of) (\d+)(?: tokens?)?.{0,80}(?:input|request).{0,40}(\d+)/i,
+  /context[_\s-]length[_\s-]exceeded/i,
+];
+
+export function contextLengthFailure(bodyText) {
+  const detail = extractUpstreamDetail(bodyText);
+  if (!detail) return undefined;
+  for (const pattern of CONTEXT_LENGTH_PATTERNS) {
+    const match = detail.match(pattern);
+    if (!match) continue;
+    if (pattern === CONTEXT_LENGTH_PATTERNS[0]) {
+      return {
+        detail,
+        inputTokens: Number(match[1]),
+        maximumTokens: Number(match[2]),
+      };
+    }
+    if (pattern === CONTEXT_LENGTH_PATTERNS[2]) {
+      return {
+        detail,
+        inputTokens: Number(match[2]),
+        maximumTokens: Number(match[1]),
+      };
+    }
+    return { detail };
+  }
+  return undefined;
+}
+
+// Status is kept separate from the translated body because callers also relay
+// ordinary gateway statuses byte-for-status. Only this deterministic request
+// rejection is corrected from the gateway's 5xx wrapper to the OpenAI-shaped
+// 400 that tells Codex not to retry.
+export function gatewayErrorStatus({ status, bodyText }) {
+  return contextLengthFailure(bodyText) ? 400 : Number(status);
+}
+
+// The same two questions `describeFailure` asks, in the same order, answered for
+// a caller that needs to *act* on the distinction rather than word it. Exported
+// as one function rather than as the two predicates, because the order is the
+// load-bearing part: "upgrade your plan" appears in both pattern sets, so a
+// caller that asked about quota first would read a permanent entitlement failure
+// as an exhausted balance. Keeping the ordering here means there is one place it
+// can be got right.
+//
+// Returns "entitlement" (a plan that never included this API -- nothing the
+// operator does with keys or top-ups changes it), "out_of_usage" (an exhausted
+// balance or plan limit, which time or a top-up fixes), or undefined for
+// everything else, including every 5xx: the origin ran, and what it said about
+// quota is not evidence about the caller's.
+export function upstreamFailureKind({ status, bodyText }) {
+  if (!(Number(status) < 500)) return undefined;
+  const detail = extractUpstreamDetail(bodyText);
+  if (isPlanEntitlement(detail)) return "entitlement";
+  if (isOutOfUsage(detail, parseUpstreamError(bodyText).type)) return "out_of_usage";
+  return undefined;
 }
 
 function describeFailure({
@@ -133,18 +190,6 @@ function describeFailure({
   providerKind,
   retryAfterSeconds,
 }) {
-  // Ahead of everything else. A required account action is neither a bad
-  // credential nor a plan limit - the key works and the upstream is asking the
-  // account holder to tick something - but it arrives as a 403 and reads like
-  // both. OpenRouter gates some models behind an age confirmation this way,
-  // and answering it as "your credentials were rejected, re-run setup" sends
-  // people to re-enter a key that was never the problem.
-  if (status < 500 && requiresAccountAction(detail)) {
-    return {
-      type: "invalid_request_error",
-      message: `${providerName} accepted the credential but will not serve ${modelName} until an action is completed on your ${providerName} account. Re-running setup will not help; the upstream's own instruction follows.`,
-    };
-  }
   // Ahead of both the quota and the credential branches: an entitlement
   // failure is the only one of the three that neither a top-up nor a new key
   // can resolve, and its wording overlaps with both.
@@ -169,10 +214,6 @@ function describeFailure({
         message: `${providerName} rejected the OAuth session while serving ${modelName}. Sign in to ${providerName} again.`,
       };
     }
-    // 403 deliberately falls through to the credential wording: providers do
-    // use it for a rejected key ("Invalid API key provided"), so the status
-    // alone cannot separate the two. The detail is what distinguishes them,
-    // which is why the account-action branch above matches on that instead.
     return {
       type: "authentication_error",
       message: `${providerName} rejected the stored credentials while serving ${modelName}. Re-run codex-router setup to refresh them.`,
@@ -220,6 +261,24 @@ export function translateGatewayError({
   retryAfterSeconds,
 }) {
   const detail = extractUpstreamDetail(bodyText);
+  const context = contextLengthFailure(bodyText);
+  if (context) {
+    const measured =
+      Number.isFinite(context.inputTokens) && Number.isFinite(context.maximumTokens)
+        ? `The rendered prompt is ${context.inputTokens.toLocaleString("en-US")} tokens, exceeding the model's ${context.maximumTokens.toLocaleString("en-US")}-token context window.`
+        : "The rendered prompt exceeds the model's context window.";
+    return {
+      error: {
+        message:
+          `${providerName} could not run ${modelName}. ${measured} ` +
+          "This is a context-window or tokenizer/template mismatch, not high demand. " +
+          "Start a shorter task or choose a different model tag.",
+        type: "invalid_request_error",
+        param: "input",
+        code: "context_length_exceeded",
+      },
+    };
+  }
   const failure = describeFailure({
     status,
     detail,

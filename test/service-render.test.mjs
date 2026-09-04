@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -70,17 +71,32 @@ function systemdQuoted(value) {
     .replaceAll('"', '\\"')}"`;
 }
 
+function launchdXml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
 test("background service definitions render for macOS, Linux, and Windows", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-services-"));
   try {
     const launchd = render("service-macos.mjs", "darwin", testRoot);
     assert.match(launchd, /<string>io\.github\.codex-router<\/string>/);
+    assert.match(launchd, /<key>PATH<\/key>/);
     assert.match(launchd, /CODEX_ROUTER_STATE_DIR/);
 
     const systemd = render("service-linux.mjs", "linux", testRoot);
     assert.match(systemd, /\[Service\]/);
     assert.match(systemd, /ExecStart=/);
+    assert.match(systemd, /Environment="PATH=/);
     assert.match(systemd, /Environment="CODEX_ROUTER_STATE_DIR=/);
+    assert.match(systemd, /MODEL_ROUTER_GATEWAY_PORT=4200/);
+    assert.match(systemd, /MODEL_ROUTER_OAUTH_PORT=4201/);
+    assert.match(systemd, /MODEL_ROUTER_PORT=4202/);
+    assert.match(systemd, /MODEL_ROUTER_API_PORT=4203/);
 
     const windows = render("service-windows.mjs", "win32", testRoot);
     assert.match(windows, /@echo off\r?\n/);
@@ -95,14 +111,114 @@ test("background service definitions render for macOS, Linux, and Windows", () =
   }
 });
 
-test("packaged services persist stable source and Node paths", () => {
+test("background services preserve the installer's proxy environment", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-service-proxy-"));
+  const proxyEnvironment = {
+    http_proxy: "http://proxy.example:8080",
+    HTTPS_PROXY: "http://secure-proxy.example:8443",
+    all_proxy: "socks5://proxy.example:1080",
+    NO_PROXY: "localhost,127.0.0.1,::1",
+    NODE_USE_ENV_PROXY: "1",
+  };
+  try {
+    const launchd = serviceCommand(
+      "service-macos.mjs",
+      "darwin",
+      testRoot,
+      "render",
+      "codex",
+      root,
+      proxyEnvironment,
+    );
+    const systemd = serviceCommand(
+      "service-linux.mjs",
+      "linux",
+      testRoot,
+      "render",
+      "codex",
+      root,
+      proxyEnvironment,
+    );
+    const windows = serviceCommand(
+      "service-windows.mjs",
+      "win32",
+      testRoot,
+      "render",
+      "codex",
+      root,
+      proxyEnvironment,
+    );
+
+    for (const [name, value] of Object.entries(proxyEnvironment)) {
+      assert.ok(
+        launchd.includes(
+          `<key>${launchdXml(name)}</key>\n    <string>${launchdXml(value)}</string>`,
+        ),
+        `launchd did not preserve ${name}`,
+      );
+      assert.ok(
+        systemd.includes(`Environment=${systemdQuoted(`${name}=${value}`)}`),
+        `systemd did not preserve ${name}`,
+      );
+      assert.ok(
+        windows.includes(`set "${name}=${value}"`),
+        `Task Scheduler wrapper did not preserve ${name}`,
+      );
+    }
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test(
+  "the generated systemd unit stays owner-only when it stores proxy settings",
+  { skip: process.platform === "win32" },
+  () => {
+    const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-service-mode-"));
+    const stubDir = path.join(testRoot, "bin");
+    mkdirSync(stubDir, { recursive: true });
+    const systemctl = path.join(stubDir, "systemctl");
+    writeFileSync(systemctl, "#!/bin/sh\nexit 0\n", "utf8");
+    chmodSync(systemctl, 0o755);
+    try {
+      serviceCommand(
+        "service-linux.mjs",
+        "linux",
+        testRoot,
+        "install",
+        "codex",
+        root,
+        {
+          PATH: `${stubDir}${path.delimiter}${process.env.PATH || ""}`,
+          HTTPS_PROXY: "http://user:secret@proxy.example:8443",
+        },
+      );
+
+      const unitPath = path.join(
+        testRoot,
+        "xdg config",
+        "systemd",
+        "user",
+        "codex-router.service",
+      );
+      assert.equal(statSync(unitPath).mode & 0o777, 0o600);
+      assert.match(readFileSync(unitPath, "utf8"), /HTTPS_PROXY=/);
+    } finally {
+      rmSync(testRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test("packaged services preserve wrapper and PATH values with service-safe quoting", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-packaged-service-"));
-  const stableRoot = path.join(testRoot, "opt", "codex-router", "libexec");
-  const stableNode = path.join(testRoot, "opt", "node", "bin", "node");
+  const stableRoot = path.join(testRoot, "opt % router", "libexec");
+  const stableNode = path.join(testRoot, 'runtime "bin" %', "node wrapper");
+  const servicePath = `${path.dirname(stableNode)}:${path.join(testRoot, "support & tools")}`;
   const env = {
     CODEX_ROUTER_SOURCE_ROOT: stableRoot,
     CODEX_ROUTER_NODE_BIN: stableNode,
     CODEX_ROUTER_PACKAGE_MANAGER: "homebrew",
+    PATH: servicePath,
   };
   try {
     const launchd = serviceCommand(
@@ -114,7 +230,12 @@ test("packaged services persist stable source and Node paths", () => {
       root,
       env,
     );
-    assert.match(launchd, new RegExp(stableNode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.ok(launchd.includes(`<string>${launchdXml(stableNode)}</string>`));
+    assert.ok(
+      launchd.includes(
+        `<key>PATH</key>\n    <string>${launchdXml(servicePath)}</string>`,
+      ),
+    );
     assert.match(launchd, /<key>CODEX_ROUTER_SOURCE_ROOT<\/key>/);
     assert.match(launchd, /<key>CODEX_ROUTER_NODE_BIN<\/key>/);
     assert.match(launchd, /<string>homebrew<\/string>/);
@@ -130,6 +251,7 @@ test("packaged services persist stable source and Node paths", () => {
     );
     assert.ok(systemd.includes(`WorkingDirectory=${stableRoot.replaceAll("%", "%%")}`));
     assert.ok(systemd.includes(`ExecStart=${systemdQuoted(stableNode)}`));
+    assert.ok(systemd.includes(`Environment=${systemdQuoted(`PATH=${servicePath}`)}`));
     assert.ok(systemd.includes(`Environment="CODEX_ROUTER_PACKAGE_MANAGER=homebrew"`));
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
@@ -335,6 +457,8 @@ test(
       assert.equal(run("install").installed, true);
       assert.equal(existsSync(wrapperPath), true);
       assert.equal(existsSync(launcherPath), true);
+      assert.equal(statSync(wrapperPath).mode & 0o777, 0o600);
+      assert.equal(statSync(launcherPath).mode & 0o777, 0o600);
 
       const bytes = readFileSync(launcherPath);
       // wscript.exe falls back to the ANSI code page without this byte order

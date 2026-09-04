@@ -28,7 +28,7 @@ the same command.
 ## Ask Codex to install it
 
 ```text
-Install Nexus from:
+Install Codex Router from:
 https://github.com/duolahypercho/codex-router
 
 Follow AGENTS.md. Preserve all of my existing Codex settings and ChatGPT login.
@@ -70,12 +70,16 @@ Set-Location codex-router
 ./install.ps1 -Guided
 ```
 
-On macOS and Linux, guided setup also offers to build and launch the desktop
-companion (the macOS menu bar app or the Windows/Linux tray). `--with-tray`
-installs it without asking, `--no-tray` never offers it, and automatic mode
-skips it. On macOS the app bundle is placed in `~/Applications` and needs the
-Swift toolchain; a missing toolchain skips the step with guidance instead of
-failing setup. Windows still builds the tray manually with
+Guided setup also offers to build and launch the desktop companion (the macOS
+menu bar app, or the Windows/Linux tray). `--with-tray` installs it without
+asking, `--no-tray` never offers it, and automatic mode skips it. On Windows
+the same choice is `-WithTray` / `-NoTray`.
+
+On macOS the app bundle is placed in `~/Applications` and needs the Swift
+toolchain; a missing toolchain skips the step with guidance instead of failing
+setup. On Windows the Tauri companion is built with Rust and registered as a
+`Codex Router Tray` logon task so it returns after a reboot; a missing Rust
+toolchain skips the step the same way. You can still build it by hand with
 `scripts/build-desktop-tray.ps1`.
 Guided setup walks through numbered steps: a provider list you toggle by
 number (`a` selects all, `n` clears, Enter continues) with a live
@@ -102,11 +106,13 @@ API-key providers use hidden prompts:
 ./bin/provider-key ollama-cloud set
 ./bin/provider-key qwen-plan set
 ./bin/provider-key zai-coding set
+./bin/provider-key zai-api set
 ./bin/provider-key github-copilot set
+./bin/provider-key orca set
 ```
 
 Replace a stored key by running `set` again. Delete one with `remove`, which
-also hides the provider from the model picker:
+also hides the provider from every installed client's model picker:
 
 ```sh
 ./bin/provider-key deepseek remove
@@ -137,11 +143,19 @@ Windows:
 ./codex-router.ps1 provider-key grok-api set
 ./codex-router.ps1 provider-key anthropic-api set
 ./codex-router.ps1 provider-key github-copilot set
+./codex-router.ps1 provider-key orca set
 ```
 
-Kimi OAuth, Kimi Platform, DeepSeek, xAI, Anthropic, and GitHub Copilot are separate account and billing
+Kimi OAuth, Kimi Platform, DeepSeek, xAI, Anthropic, GitHub Copilot, and OrcaRouter are separate account and billing
 systems. Never put a credential in chat, a command argument, shell history,
 the provider registry, or a tracked file.
+
+OrcaRouter is catalog-only: after storing its key, use
+`./bin/curate-models orca` to choose from the account-visible live
+catalog, or `./bin/curate-models orca --free-only --apply` to add its
+current concrete zero-price chat deployments. They appear under OrcaRouter
+with a **Free** badge; the moving `orcarouter/free` meta-router is excluded.
+Free inference still requires the key.
 
 GitHub Copilot requires a fine-grained PAT with the **Copilot Requests**
 permission. After storing it, run `./bin/curate-models github-copilot`; the
@@ -173,12 +187,61 @@ foreground commands but is not copied into launchd, systemd, or Task Scheduler.
 Use `provider-key ... set` so the per-user background service has persistent,
 protected access.
 
+## Outbound proxy
+
+The router follows Node's explicit proxy opt-in. Set
+`NODE_USE_ENV_PROXY=1` together with `http_proxy`, `https_proxy`, and
+`no_proxy` (including their uppercase forms) before running setup or install.
+On Node releases that support the flag, `--use-env-proxy` or
+`NODE_OPTIONS=--use-env-proxy` is equivalent. The generated per-user
+background service preserves the opt-in and values so a service started
+outside the login shell uses the same proxy. Without the opt-in, inherited
+proxy variables remain unused by the router.
+
+Include `localhost`, `127.0.0.1`, and `::1` in `no_proxy` because the router's
+own processes communicate over loopback.
+
+### GUI clients and the system proxy
+
+`no_proxy` covers processes that inherit your shell. Apps launched from the
+Dock, Finder, or an IDE inherit nothing and fall back to the operating
+system's proxy settings instead, whose bypass list routinely omits loopback.
+When that happens the client sends its router request to the proxy, the proxy
+closes the connection, and the client reports a bare transport failure such as
+`stream disconnected before completion: error sending request for url`. Nothing
+reaches the router, so `router.log` stays empty and `doctor` still reports the
+service healthy -- the terminal keeps working the whole time, because a shell
+exports `no_proxy`.
+
+`doctor` detects this and names the remedy. On macOS, put loopback into the
+session every GUI app inherits:
+
+```sh
+launchctl setenv NO_PROXY "localhost,127.0.0.1,::1"
+```
+
+Then fully quit and reopen the client; apps read this only at launch. The
+setting lasts until you log out. To make it permanent, add a login agent at
+`~/Library/LaunchAgents/local.noproxy-loopback.plist` that runs the same
+command with `RunAtLoad`, and load it with
+`launchctl bootstrap gui/$(id -u) <plist>`.
+
+Adding loopback to the system bypass list (System Settings -> Network ->
+Details -> Proxies) is equivalent in principle, but VPN clients that manage
+the system proxy tend to rewrite that list whenever they reconnect, and some
+clients do not honour it for literal loopback addresses.
+
+`all_proxy` / `ALL_PROXY` is also preserved for child processes that support
+it, but the router's Undici transport requires `http_proxy` or `https_proxy` to
+enable proxy routing. After changing these variables, rerun install to refresh
+the background service definition.
+
 ## Installer transaction
 
 Setup performs these operations in order:
 
 1. Validates provider selection and credential presence.
-2. Detects other model-catalog owners and earlier Nexus variants.
+2. Detects other model-catalog owners and earlier Codex Router variants.
 3. With approval, snapshots and stops only recognized older variants.
 4. Installs locked Node dependencies and pinned LiteLLM in `.venv`.
 5. Generates separate random Codex caller and internal-service keys.
@@ -198,10 +261,67 @@ If config or service installation fails, the new service and marked config block
 are removed. If a legacy migration was part of the transaction, its exact config
 and service definition are restored as well.
 
-The installer does not kill an unknown process on ports 4100–4103 and does not
+The installer does not kill an unknown process on ports 4200–4203 and does not
 replace an unmarked user-owned `openai_base_url`, `model_catalog_json`, or agent
 concurrency value. Disabling the router removes only its marked concurrency
 default; a user-owned value remains intact.
+
+## Credential-free (idle) install
+
+For validating the router's install, lifecycle, network, and uninstall
+behavior before trusting it with any credential, both installers accept an
+explicit idle mode:
+
+```sh
+./install.sh --target codex --no-provider --no-discovery --no-tray
+```
+
+```powershell
+./install.ps1 -Target codex -NoProvider -NoDiscovery -NoTray
+```
+
+`--no-provider` installs with an explicit empty provider selection: no
+provider is selected, no credential is prompted for or written, and the
+default-provider discovery scan is skipped. It conflicts with `--guided`,
+`--providers`, and the key-prompt flags. On its own it does not disable
+credential discovery — the doctor and tray may still look at what exists, and
+Codex's native passthrough keeps working exactly as it does for an operator
+who hides every provider by hand.
+
+`--no-discovery` (requires `--no-provider`) additionally persists a discovery
+kill-switch in the state directory (`discovery-mode.json`). While it is set:
+
+- Provider credential files, the macOS Keychain, other CLIs' OAuth and
+  session files, and Codex's own `auth.json` are never read.
+- The `codex login status` sign-in probe is never spawned against the real
+  `CODEX_HOME`. (The catalog build still runs `codex debug models --bundled`,
+  which reads a static model list, not credentials.)
+- The merged catalog publishes no models, so Codex's picker is empty by
+  design while pointed at the router.
+- Codex traffic reaching the router gets a local
+  `503 router_idle_no_provider` error instead of native or provider
+  forwarding. Nothing leaves the machine; every listener stays on
+  `127.0.0.1` as always.
+
+The full lifecycle works in this state:
+
+```sh
+./bin/model-router codex status
+./bin/model-router codex doctor    # exits 0; idle state reports as warnings
+./bin/model-router codex stop
+./bin/model-router codex start     # foreground; the service restarts it otherwise
+./bin/model-router codex uninstall
+```
+
+Uninstall is the undo path: it removes the managed config block and, once no
+client integration remains, the background service and its LaunchAgent.
+`rollback` is not — it reverts the managed *source checkout* to the previous
+revision, not the installation.
+
+To leave idle mode, re-run setup or the installer without the flags (for
+example `./bin/setup --guided`); every setup run rewrites the discovery
+marker, so a normal install re-enables discovery. `CODEX_ROUTER_NO_DISCOVERY=1`
+(or `=0`) overrides the marker either way for one process.
 
 ## Recognized older installations
 
@@ -229,7 +349,7 @@ An unknown catalog owner requires a manual decision; automatic setup stops
 without changing it.
 
 If `model_catalog_json` points to a user-owned native Codex catalog rather than
-another router, you can explicitly keep it as Nexus's merge base:
+another router, you can explicitly keep it as Codex Router's merge base:
 
 ```sh
 ./install.sh --auto --providers configured --adopt-native-catalog
@@ -240,10 +360,10 @@ another router, you can explicitly keep it as Nexus's merge base:
 ```
 
 Adoption is accepted only when the path is absolute, the JSON contains at
-least one native model, none of its slugs are already routed by Nexus,
+least one native model, none of its slugs are already routed by Codex Router,
 and no custom `openai_base_url` is configured. The file stays user-owned and
 is read in place on every catalog rebuild, so moving, deleting, or making it
-invalid stops the rebuild with an explicit error. Disabling Nexus
+invalid stops the rebuild with an explicit error. Disabling Codex Router
 restores that exact catalog path. A failed install clears a pending adoption
 and leaves the original Codex config intact.
 
@@ -269,9 +389,43 @@ state can be rebuilt with:
 Live quota-consuming verification is separate:
 
 ```sh
-./bin/smoke-test
+./bin/smoke-test --yes
 ./bin/test-model 'kimi-oauth/k3' --live --yes
 ```
+
+## Starting the router when Codex starts
+
+The router normally runs continuously under launchd, and the macOS tray starts
+it again whenever Codex appears. Both learn about a new Codex by polling, so a
+cold start can race: the CLI can send its first request a second or two before
+the gateway is accepting connections.
+
+The optional `codex` shim closes that window by doing the check in the one place
+that is provably earlier than Codex — in front of it:
+
+```sh
+./bin/model-router codex shim install
+./bin/model-router codex shim status
+./bin/model-router codex shim uninstall
+```
+
+It is never installed automatically, because putting a file named `codex` on
+your PATH shadows a command the router was not asked to own.
+
+Install picks the writable directory closest to the real Codex but still ahead
+of it on PATH, and refuses to overwrite any `codex` it did not write. If nothing
+suitable is on PATH, the shim lands in the router's state directory and prints
+the one `export PATH=...` line to add — it does not edit shell startup files on
+your behalf. `status` distinguishes *installed* from *effective*, since a shim
+that ends up behind the real Codex on PATH is a silent no-op.
+
+When the router is already listening, the shim costs one loopback connection and
+no processes at all. When it is not, the shim starts the service, waits up to
+`MODEL_ROUTER_SHIM_WAIT` seconds (45 by default), and then runs Codex regardless
+— a router problem must never become "codex will not start". Set
+`MODEL_ROUTER_SHIM=0` for a single run to bypass the check entirely.
+
+The shim is a bash script and is not available on Windows.
 
 ## Update and rollback
 
@@ -313,11 +467,15 @@ Any other non-zero exit still restores the previous revision. Re-run setup to
 continue, or `./bin/rollback` (`./codex-router.ps1 rollback` on Windows) to
 return to the retained revision deliberately.
 
-The reinstall skips dependency work whose inputs are unchanged, so an update
-that carries no `package-lock.json` or LiteLLM pin change costs a service
-restart rather than a full `npm ci` and PyPI resolution. `./bin/doctor --fix`
-rebuilds them regardless, as does `./bin/install --force-deps`
-(`./install.ps1 -CheckoutInstall -ForceDeps` on Windows).
+For checkout installs, the reinstall skips dependency work whose inputs are
+unchanged, so an update that carries no `package-lock.json` or LiteLLM pin
+change costs a service restart rather than a full `npm ci` and PyPI resolution.
+`./bin/doctor --fix` rebuilds checkout-owned dependencies regardless, as does
+`./bin/install --force-deps` (`./install.ps1 -CheckoutInstall -ForceDeps` on
+Windows). Homebrew owns the dependency tree in its formula prefix: its normal
+doctor repair regenerates config and services without mutating that tree, and a
+missing or broken package file must be repaired with `brew reinstall
+codex-router`.
 
 When upgrading from a release without caller capabilities, the installer
 generates one, replaces only the marked managed URL, tightens config permissions,
@@ -350,3 +508,10 @@ Uninstall removes the marked integration config and current background service.
 It intentionally retains the checkout, native catalog cache, logs, backups,
 migration snapshots, internal key, and provider credentials. This prevents a
 routine uninstall from silently destroying authentication or recovery data.
+Existing Codex Router installs that used the former 4100–4103/4108 defaults are
+migrated on the next install or update: the managed Codex URL and generated
+systemd/launchd/task service are rewritten as one install transaction, and the
+old service is stopped before the new unit is started. Explicit
+`MODEL_ROUTER_*_PORT` (or legacy `CODEX_ROUTER_*_PORT`) environment settings
+remain authoritative for operators who intentionally keep a custom or legacy
+block.

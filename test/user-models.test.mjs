@@ -31,38 +31,20 @@ test("userModelEntry fills conservative picker metadata", () => {
   assert.ok(entry.autoCompact >= 1 && entry.autoCompact <= entry.contextWindow);
   assert.deepEqual(entry.inputModalities, ["text"]);
   assert.equal(entry.compHash, "ollama-cloud-gpt-oss-120b-user-v1");
+  assert.equal(entry.requiresTrailingUserTurn, undefined);
   assert.ok(entry.displayName.includes("gpt-oss:120b"));
   assert.ok(entry.description.length > 0);
 });
 
-test("a curated model names the provider that will bill it", () => {
-  const throughOpenRouter = userModelEntry({
-    providerId: "openrouter",
-    providerDisplayName: "OpenRouter",
-    upstreamId: "deepseek-v4-pro",
-    priority: 100,
-  });
-  const throughDeepSeek = userModelEntry({
-    providerId: "deepseek",
-    providerDisplayName: "DeepSeek API",
-    upstreamId: "deepseek-v4-pro",
-    priority: 101,
-  });
-  // The picker shows the display name and nothing else, so two routes to one
-  // upstream model have to be told apart there or not at all.
-  assert.equal(throughOpenRouter.displayName, "deepseek-v4-pro (OpenRouter)");
-  assert.equal(throughDeepSeek.displayName, "deepseek-v4-pro (DeepSeek API)");
-  assert.notEqual(throughOpenRouter.displayName, throughDeepSeek.displayName);
-  assert.notEqual(throughOpenRouter.slug, throughDeepSeek.slug);
-});
-
-test("a curated model falls back to the provider id when no name is passed", () => {
+test("OpenCode's opaque free preview id is presented as Ox Alpha Free", () => {
   const entry = userModelEntry({
-    providerId: "openrouter",
-    upstreamId: "deepseek-v4-pro",
+    providerId: "opencode-free",
+    upstreamId: "x-preview-f-free",
     priority: 100,
   });
-  assert.equal(entry.displayName, "deepseek-v4-pro (openrouter)");
+  assert.equal(entry.slug, "opencode-free/x-preview-f-free");
+  assert.equal(entry.upstreamModel, "x-preview-f-free");
+  assert.equal(entry.displayName, "Ox Alpha Free");
 });
 
 test("curation metadata can set sizing and the effort ladder", () => {
@@ -81,6 +63,8 @@ test("curation metadata can set sizing and the effort ladder", () => {
       ],
       defaultEffort: "medium",
       serviceTiers: [{ id: "priority", name: "Fast" }],
+      requiresTrailingUserTurn: true,
+      isFree: true,
     },
   });
   assert.equal(entry.contextWindow, 262144);
@@ -88,6 +72,22 @@ test("curation metadata can set sizing and the effort ladder", () => {
   assert.equal(entry.reasoningLevels.length, 3);
   assert.equal(entry.defaultEffort, "medium");
   assert.deepEqual(entry.serviceTiers, [{ id: "priority", name: "Fast" }]);
+  assert.equal(entry.requiresTrailingUserTurn, true);
+  assert.equal(entry.isFree, true);
+});
+
+test("curation metadata can expose provider-verified reasoning summaries", () => {
+  const entry = userModelEntry({
+    providerId: "chutes",
+    upstreamId: "moonshotai/Kimi-K3-TEE",
+    priority: 100,
+    metadata: {
+      supportsReasoningSummaries: true,
+      defaultReasoningSummary: "auto",
+    },
+  });
+  assert.equal(entry.supportsReasoningSummaries, true);
+  assert.equal(entry.defaultReasoningSummary, "auto");
 });
 
 test("curation metadata cannot replace identity or routing fields", () => {
@@ -152,16 +152,39 @@ test("registry merges valid user models and skips collisions", async () => {
       ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-blank-nux", priority: 103 }),
       availabilityNux: "   ",
     },
-    // Only the implemented "hosted" search mode may be declared; anything
-    // else would advertise a search the request path cannot serve.
+    // Search modes are a closed set. Unknown modes must not advertise a
+    // search path the request path cannot serve.
     {
       ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-bad-search", priority: 106 }),
       searchTool: { mode: "emulated" },
+    },
+    // Standalone search is Codex-side execution; it remains an explicit
+    // per-model opt-in rather than a provider-wide default.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-standalone-search", priority: 110 }),
+      searchTool: { mode: "standalone" },
     },
     // Capability toggles are booleans; a truthy string must not slip through.
     {
       ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-bad-detail", priority: 107 }),
       supportsImageDetailOriginal: "yes",
+    },
+    // Destructive trailing-turn handling is an explicit boolean capability.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-bad-trailing-turn", priority: 111 }),
+      requiresTrailingUserTurn: "yes",
+    },
+    // Reasoning-summary capability fields must agree. A valid enum on its own
+    // must not make the catalog claim summaries for a model that does not
+    // explicitly support them.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-summary-without-support", priority: 108 }),
+      defaultReasoningSummary: "auto",
+    },
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-invalid-summary-support", priority: 109 }),
+      supportsReasoningSummaries: "yes",
+      defaultReasoningSummary: "auto",
     },
     // An upgrade prompt pointing at a slug the merged registry does not carry
     // can never render, so the entry is skipped.
@@ -183,7 +206,11 @@ test("registry merges valid user models and skips collisions", async () => {
   assert.ok(!slugs.includes("no-such-provider/x-model"));
   assert.ok(!slugs.includes("deepseek/deepseek-blank-nux"));
   assert.ok(!slugs.includes("deepseek/deepseek-bad-search"));
+  assert.ok(slugs.includes("deepseek/deepseek-standalone-search"));
   assert.ok(!slugs.includes("deepseek/deepseek-bad-detail"));
+  assert.ok(!slugs.includes("deepseek/deepseek-bad-trailing-turn"));
+  assert.ok(!slugs.includes("deepseek/deepseek-summary-without-support"));
+  assert.ok(!slugs.includes("deepseek/deepseek-invalid-summary-support"));
   assert.ok(!slugs.includes("deepseek/deepseek-bad-upgrade"));
   assert.deepEqual(
     registry.MODEL_BY_SLUG.get("deepseek/deepseek-good-upgrade").upgradeTo,
@@ -194,4 +221,8 @@ test("registry merges valid user models and skips collisions", async () => {
   const merged = registry.MODEL_BY_SLUG.get("deepseek/deepseek-user-test");
   assert.equal(merged.listed, true);
   assert.equal(merged.availabilityNux, "Now available through your DeepSeek key.");
+  assert.deepEqual(
+    registry.MODEL_BY_SLUG.get("deepseek/deepseek-standalone-search").searchTool,
+    { mode: "standalone" },
+  );
 });

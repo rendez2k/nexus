@@ -21,6 +21,17 @@ function parseDoctorReport(output) {
   }
 }
 
+export function doctorRestartRequired(report) {
+  return Boolean(
+    report?.checks?.some(
+      (check) =>
+        check.status === "warn" &&
+        check.name === "Codex model catalog" &&
+        check.detail === "startup catalog is stale",
+    ),
+  );
+}
+
 // The tray can be built from a different checkout than the one that owns the
 // installed router (for example a login item left behind by an old bundle on a
 // removable volume). Maintenance must update the recorded owner, otherwise
@@ -50,7 +61,7 @@ export function runCodexMaintenance({
     options,
   );
   if (update.error || update.status !== 0) {
-    throw new Error(commandDetail(update, "Nexus update failed."));
+    throw new Error(commandDetail(update, "Codex Router update failed."));
   }
 
   const doctor = runner(
@@ -65,13 +76,14 @@ export function runCodexMaintenance({
       .map((check) => check.name);
     const detail = failedChecks?.length
       ? `Doctor found problems: ${failedChecks.join(", ")}.`
-      : commandDetail(doctor, "Nexus doctor failed.");
+      : commandDetail(doctor, "Codex Router doctor failed.");
     throw new Error(detail);
   }
 
   return {
     updated: true,
     verified: true,
+    restartRequired: doctorRestartRequired(report),
     checks: Array.isArray(report?.checks) ? report.checks.length : 0,
   };
 }

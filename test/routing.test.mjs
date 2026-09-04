@@ -308,7 +308,18 @@ test("router requires the configured path capability before any model route", as
     const publicHealth = await fetch(`http://127.0.0.1:${routerPort}/health`);
     assert.equal(publicHealth.status, 200);
     const publicPayload = await publicHealth.json();
-    assert.deepEqual(Object.keys(publicPayload).sort(), ["activity", "ok", "service", "version"]);
+    assert.deepEqual(
+      Object.keys(publicPayload).sort(),
+      ["activity", "degraded", "ok", "service", "version"],
+    );
+    // `degraded` names which local service is unreachable so doctor can say the
+    // gateway died rather than "the router is not ready". It is a closed set of
+    // three fixed local service names -- never a URL, a credential, or the
+    // per-service payloads the protected leaf carries.
+    assert.ok(
+      publicPayload.degraded.every((name) => ["oauth", "api", "gateway"].includes(name)),
+      JSON.stringify(publicPayload.degraded),
+    );
     assert.equal(publicPayload.activity.state, "error");
 
     const protectedHealth = await fetch(`${routerBase(routerPort)}/health`);
@@ -500,6 +511,101 @@ test("router dispatches aliased native slugs to the mapped external model", asyn
   }
 });
 
+test("native tool-result aging is opt-in and rewrites only consumed old results", async () => {
+  const nativeRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push({ url: request.url, body: await bodyJson(request) });
+    json(response, 200, { route: "native" });
+  });
+
+  // A conversation whose first tool result is large, already acted on, and
+  // outside the four-newest frontier — exactly the shape aging compacts.
+  const bigOutput = "x".repeat(40_000);
+  const agableInput = [
+    { type: "function_call", call_id: "call-old", name: "shell", arguments: "{}" },
+    { type: "function_call_output", call_id: "call-old", output: bigOutput },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "acted on it" }],
+    },
+    ...[1, 2, 3, 4].map((n) => ({
+      type: "function_call_output",
+      call_id: `call-${n}`,
+      output: `small result ${n}`,
+    })),
+  ];
+  const send = async (routerPort) =>
+    fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: agableInput }),
+    });
+
+  // Default state: the native path forwards the blob untouched.
+  const defaultPort = await openPort();
+  const defaultRouter = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(defaultPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    await waitFor(`${routerBase(defaultPort)}/models`, defaultRouter);
+    assert.equal((await send(defaultPort)).status, 200);
+    assert.equal(nativeRequests.at(-1).body.input[1].output, bigOutput);
+  } finally {
+    await stopChild(defaultRouter);
+  }
+
+  // Opted in: the blob becomes a receipt, the newest results stay intact,
+  // and the usage event records the savings.
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "native-aging-state-"));
+  writeFileSync(
+    path.join(stateDir, "tool-result-aging.json"),
+    `${JSON.stringify({ version: 1, enabled: true, nativeEnabled: true })}\n`,
+    "utf8",
+  );
+  const agingPort = await openPort();
+  const agingRouter = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(agingPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_QUIET: "1",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+  });
+  try {
+    await waitFor(`${routerBase(agingPort)}/models`, agingRouter);
+    assert.equal((await send(agingPort)).status, 200);
+    const forwarded = nativeRequests.at(-1).body.input;
+    assert.match(forwarded[1].output, /^\[Older tool result compacted by Codex Router/);
+    assert.match(forwarded[1].output, /sha256:[0-9a-f]{64}/);
+    assert.equal(forwarded.at(-1).output, "small result 4");
+    // The usage event is appended after the response is relayed; give the
+    // router a moment to flush it rather than racing the write.
+    const eventsPath = path.join(stateDir, "usage-events.jsonl");
+    let aged;
+    const deadline = Date.now() + 3_000;
+    while (!aged && Date.now() < deadline) {
+      if (existsSync(eventsPath)) {
+        aged = readFileSync(eventsPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line))
+          .find((event) => event.toolResultsAged);
+      }
+      if (!aged) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(aged?.toolResultsAged, 1);
+    assert.ok(aged.toolResultBytesSaved > 30_000);
+  } finally {
+    await stopChild(agingRouter);
+    rmSync(stateDir, { recursive: true, force: true });
+    native.server.close();
+  }
+});
+
 test("router preserves native auth and isolates every external route", async () => {
   const nativeRequests = [];
   const routedRequests = [];
@@ -548,15 +654,20 @@ test("router preserves native auth and isolates every external route", async () 
           model: "gpt-5.6-sol",
           input: "native test",
           previous_response_id: "remove-me",
+          prompt_cache_retention: "24h",
+          prompt_cache_options: { ttl: "30m" },
           client_metadata: { workspace: "caller-owned" },
         }),
       ),
     );
-    const nativeResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+    const nativeResponse = await fetch(
+      `${routerBase(routerPort)}/responses?api_key=PROVIDER_QUERY_SECRET&source=provider`,
+      {
       method: "POST",
       headers: { ...callerHeaders, "Content-Encoding": "zstd" },
       body: nativePayload,
-    });
+      },
+    );
     assert.equal(nativeResponse.status, 200);
 
     for (const [model, gatewayModel] of [
@@ -583,7 +694,11 @@ test("router preserves native auth and isolates every external route", async () 
     assert.equal(nativeRequests[0].headers.authorization, "Bearer CODEX_CALLER_SECRET");
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-secret");
     assert.equal(nativeRequests[0].headers["x-private-header"], undefined);
+    assert.equal(nativeRequests[0].url, "/backend-api/codex/responses");
+    assert.doesNotMatch(nativeRequests[0].url, /PROVIDER_QUERY_SECRET/);
     assert.equal(nativeRequests[0].body.previous_response_id, undefined);
+    assert.equal(nativeRequests[0].body.prompt_cache_retention, undefined);
+    assert.deepEqual(nativeRequests[0].body.prompt_cache_options, { ttl: "30m" });
     // Native OpenAI traffic owns client_metadata; only routed traffic drops it.
     assert.deepEqual(nativeRequests[0].body.client_metadata, { workspace: "caller-owned" });
     for (const request of routedRequests) {
@@ -1051,7 +1166,7 @@ test("router sends standalone web search only to the native OpenAI backend", asy
         }),
       ),
     );
-    const search = await fetch(`${routerBase(routerPort)}/alpha/search?source=codex`, {
+    const search = await fetch(`${routerBase(routerPort)}/alpha/search?source=codex&api_key=PROVIDER_QUERY_SECRET`, {
       method: "POST",
       headers: { ...headers, "Content-Encoding": "zstd" },
       body: searchBody,
@@ -1065,6 +1180,7 @@ test("router sends standalone web search only to the native OpenAI backend", asy
 
     assert.equal(nativeRequests.length, 1);
     assert.equal(nativeRequests[0].url, "/backend-api/codex/alpha/search?source=codex");
+    assert.doesNotMatch(nativeRequests[0].url, /PROVIDER_QUERY_SECRET/);
     assert.equal(nativeRequests[0].headers.authorization, "Bearer CODEX_CALLER_SECRET");
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-secret");
     assert.equal(nativeRequests[0].headers["x-codex-installation-id"], "installation-secret");
@@ -2412,6 +2528,46 @@ test("API forwarder routes Ollama Cloud models without unsupported parameters", 
       }),
     });
     assert.equal(upstreamRequests.at(-1).body.reasoning_effort, undefined);
+
+    async function forwardMiniMax(toolChoice) {
+      const response = await fetch(
+        `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${INTERNAL_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "ollama-cloud-minimax-m3",
+            reasoning_effort: "high",
+            messages: [{ role: "user", content: "test" }],
+            ...(toolChoice === undefined ? {} : { tool_choice: toolChoice }),
+          }),
+        },
+      );
+      assert.equal(response.status, 200);
+      return upstreamRequests.at(-1).body;
+    }
+
+    // The combined profile keeps Ollama's effort normalization while applying
+    // the MiniMax-specific compatibility exception on direct traffic.
+    const required = await forwardMiniMax("required");
+    assert.equal(required.model, "minimax-m3");
+    assert.equal(required.reasoning_effort, "high");
+    assert.equal(required.tool_choice, "auto");
+
+    const forcedFunction = await forwardMiniMax({
+      type: "function",
+      function: { name: "relay_external_agent_payload" },
+    });
+    assert.equal(forcedFunction.tool_choice, "auto");
+
+    const suppressed = await forwardMiniMax("none");
+    assert.equal(suppressed.tool_choice, "none");
+
+    const absentToolChoice = await forwardMiniMax();
+    assert.equal("tool_choice" in absentToolChoice, false);
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);
@@ -2447,6 +2603,7 @@ test("API forwarder routes Qwen plan models without unsupported parameters", asy
       ["qwen-plan-qwen3-8-max-preview", "qwen3.8-max-preview", undefined],
       ["qwen-plan-qwen3-6-flash", "qwen3.6-flash", undefined],
       ["qwen-plan-deepseek-v4-pro", "deepseek-v4-pro", "high"],
+      ["qwen-plan-deepseek-v4-pro-0813", "deepseek-v4-pro-0813", "high"],
       ["qwen-plan-deepseek-v4-flash-0731", "deepseek-v4-flash-0731", "high"],
       ["qwen-plan-glm-5-2", "glm-5.2", "high"],
     ]) {
@@ -2491,11 +2648,11 @@ test("API forwarder routes Qwen plan models without unsupported parameters", asy
 function curatedOpenRouterModels() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "routing-openrouter-models-"));
   const file = path.join(dir, "user-models.json");
-  const entry = (upstreamModel, gatewayModel, requestProfile) => ({
-    slug: `openrouter/${upstreamModel}`,
+  const entry = (provider, upstreamModel, gatewayModel, requestProfile) => ({
+    slug: `${provider}/${upstreamModel}`,
     gatewayModel,
     upstreamModel,
-    provider: "openrouter",
+    provider,
     listed: true,
     displayName: `${upstreamModel} (curated)`,
     description: "Test fixture.",
@@ -2513,8 +2670,9 @@ function curatedOpenRouterModels() {
     JSON.stringify({
       version: 1,
       models: [
-        entry("qwen/qwen3.8-max", "openrouter-qwen-qwen3-8-max", "auto-tool-choice"),
-        entry("openai/gpt-5.3", "openrouter-openai-gpt-5-3"),
+        entry("openrouter", "qwen/qwen3.8-max", "openrouter-qwen-qwen3-8-max", "auto-tool-choice"),
+        entry("openrouter", "openai/gpt-5.3", "openrouter-openai-gpt-5-3"),
+        entry("chutes", "moonshotai/Kimi-K3-TEE", "chutes-moonshotai-kimi-k3-tee"),
       ],
     }),
     "utf8",
@@ -2524,6 +2682,7 @@ function curatedOpenRouterModels() {
     file,
     restricted: "openrouter-qwen-qwen3-8-max",
     unrestricted: "openrouter-openai-gpt-5-3",
+    chutes: "chutes-moonshotai-kimi-k3-tee",
   };
 }
 
@@ -2540,6 +2699,8 @@ test("API forwarder downgrades forced tool choices only for models that declare 
     MODEL_ROUTER_USER_MODELS: curated.file,
     OPENROUTER_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
     OPENROUTER_API_KEY: "TEST_OPENROUTER_API_KEY",
+    CHUTES_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    CHUTES_API_KEY: "TEST_CHUTES_API_KEY",
     CODEX_ROUTER_QUIET: "1",
   });
 
@@ -2613,6 +2774,18 @@ test("API forwarder downgrades forced tool choices only for models that declare 
       type: "function",
       function: { name: "relay_external_agent_payload" },
     });
+
+    // Chutes K3 accepts forced tool choice, so its locally curated model must
+    // preserve "required" through the real credential/base-URL route. This
+    // local mock proves translation without spending Chutes quota.
+    const chutes = await forward(curated.chutes, {
+      reasoning_effort: "high",
+      tool_choice: "required",
+    });
+    assert.equal(chutes.headers.authorization, "Bearer TEST_CHUTES_API_KEY");
+    assert.equal(chutes.body.model, "moonshotai/Kimi-K3-TEE");
+    assert.equal(chutes.body.tool_choice, "required");
+    assert.equal(chutes.body.reasoning_effort, "high");
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);
@@ -2620,6 +2793,418 @@ test("API forwarder downgrades forced tool choices only for models that declare 
   }
 });
 
+
+// The free Qwen3.8 community endpoint validates reasoning_effort against a
+// literal set and 400s on anything outside it. `ultra` is the one rung of the
+// Codex ladder that set omits, so the profile folds exactly that value and
+// leaves the rest alone. The profile is a property of the model, not of the
+// provider, so this exercises it through a curated model on a provider whose
+// base URL can be pointed at a local mock -- an anonymous provider is pinned
+// to its official endpoint by construction and has none.
+function curatedQwen38EffortModel() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "routing-qwen38-community-models-"));
+  const file = path.join(dir, "user-models.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      version: 1,
+      models: [
+        {
+          slug: "openrouter/qwen-3.8-27b-effort",
+          gatewayModel: "openrouter-qwen-3-8-27b-effort",
+          upstreamModel: "qwen/qwen3.8-27b",
+          provider: "openrouter",
+          listed: true,
+          displayName: "Qwen3.8 27B (effort fixture)",
+          description: "Test fixture.",
+          priority: 500,
+          defaultEffort: "medium",
+          reasoningLevels: [{ effort: "medium", description: "Balanced reasoning" }],
+          contextWindow: 262144,
+          autoCompact: 230000,
+          inputModalities: ["text"],
+          requestProfile: "qwen38-community",
+          compHash: "openrouter-qwen-3-8-27b-effort-user-v1",
+        },
+      ],
+    }),
+    "utf8",
+  );
+  return { dir, file, gatewayModel: "openrouter-qwen-3-8-27b-effort" };
+}
+
+// One real tool, so a forced choice has something to choose from. The endpoint
+// rejects `tool_choice` sent on its own, so every request here that names a
+// choice names this list too.
+const QWEN38_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "shell",
+      description: "Run a command.",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+      },
+    },
+  },
+];
+
+test("API forwarder folds only the effort tier the free Qwen3.8 endpoint rejects", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const curated = curatedQwen38EffortModel();
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    OPENROUTER_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    OPENROUTER_API_KEY: "TEST_OPENROUTER_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    for (const [sentEffort, expectedEffort] of [
+      ["ultra", "max"],
+      ["max", "max"],
+      ["xhigh", "xhigh"],
+      ["high", "high"],
+      ["medium", "medium"],
+      ["low", "low"],
+      ["minimal", "minimal"],
+      ["none", "none"],
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: curated.gatewayModel,
+          reasoning_effort: sentEffort,
+          tools: QWEN38_TOOLS,
+          tool_choice: "required",
+          messages: [{ role: "user", content: "test" }],
+        }),
+      });
+      assert.equal(response.status, 200);
+      const request = upstreamRequests.at(-1);
+      assert.equal(request.body.reasoning_effort, expectedEffort);
+      // The endpoint answers a forced tool choice with a real tool call
+      // (verified live), so the profile must not downgrade it -- the
+      // compatibility probe and the subagent payload relay both depend on it.
+      // The choice travels with the tool it is forcing, because the endpoint
+      // rejects a tool_choice that has nothing to choose from.
+      assert.equal(request.body.tool_choice, "required");
+    }
+
+    // An absent effort stays absent so the endpoint applies its own default.
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: curated.gatewayModel,
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal("reasoning_effort" in upstreamRequests.at(-1).body, false);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
+// The same endpoint rejects an empty tool list ("`tools` must not be an empty
+// array ... or omit the field entirely") and a tool choice with no tools
+// ("When using `tool_choice`, `tools` must be set"), both measured live.
+// `summarize()` sends `tools: []` on every compaction and this model
+// auto-compacts well inside its window, so the pair arrives together and the
+// profile has to omit both fields rather than forward either.
+test("API forwarder omits the empty tool list the free Qwen3.8 endpoint rejects", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const curated = curatedQwen38EffortModel();
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    OPENROUTER_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    OPENROUTER_API_KEY: "TEST_OPENROUTER_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    // The compaction shape: an empty list plus the choice that goes with it.
+    // Both fields have to be gone, not one of them.
+    const compaction = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: curated.gatewayModel,
+        tools: [],
+        tool_choice: "none",
+        messages: [{ role: "user", content: "summarize" }],
+      }),
+    });
+    assert.equal(compaction.status, 200);
+    const compacted = upstreamRequests.at(-1).body;
+    assert.equal("tools" in compacted, false);
+    assert.equal("tool_choice" in compacted, false);
+
+    // A real tool list is the normal turn, and the strip must not touch it.
+    const turn = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: curated.gatewayModel,
+        tools: QWEN38_TOOLS,
+        tool_choice: "auto",
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+    assert.equal(turn.status, 200);
+    const forwarded = upstreamRequests.at(-1).body;
+    assert.deepEqual(forwarded.tools, QWEN38_TOOLS);
+    assert.equal(forwarded.tool_choice, "auto");
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
+// The third refusal measured on the same endpoint: "System message must be at
+// the beginning." Probing it with one-token requests pinned the rule to at most
+// one `system` message, sitting ahead of the first user/assistant/tool turn --
+// `[user, system, user]`, `[user, assistant, system]`, and
+// `[system, system, user]` all 400, `[system, user]` 200. The `developer` role
+// is outside the rule entirely (`[developer, system, user]`,
+// `[user, developer, user]`, `[developer, developer, user]` all 200), which is
+// why "the beginning" is measured as "before the first turn" and why the
+// profile never touches a developer message.
+test("API forwarder hoists and coalesces the system messages the free Qwen3.8 endpoint refuses", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const curated = curatedQwen38EffortModel();
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    OPENROUTER_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    OPENROUTER_API_KEY: "TEST_OPENROUTER_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const send = async (messages) => {
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: curated.gatewayModel, messages }),
+    });
+    assert.equal(response.status, 200);
+    return upstreamRequests.at(-1).body.messages;
+  };
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+
+    // Two leading system messages: one arrives, carrying both texts in the
+    // order the caller wrote them.
+    assert.deepEqual(
+      await send([
+        { role: "system", content: "You are Codex." },
+        { role: "system", content: "Answer in English." },
+        { role: "user", content: "hello" },
+      ]),
+      [
+        { role: "system", content: "You are Codex.\n\nAnswer in English." },
+        { role: "user", content: "hello" },
+      ],
+    );
+
+    // A late system message is hoisted ahead of the first turn; every other
+    // message keeps its place, including the assistant turn behind it.
+    assert.deepEqual(
+      await send([
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+        { role: "system", content: "Be brief." },
+        { role: "user", content: "and now?" },
+      ]),
+      [
+        { role: "system", content: "Be brief." },
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+        { role: "user", content: "and now?" },
+      ],
+    );
+
+    // Content parts are the other shape Codex sends. They concatenate instead
+    // of being flattened into a string, and a mixed merge promotes the plain
+    // string to a text part rather than stringifying the parts list.
+    assert.deepEqual(
+      await send([
+        { role: "system", content: [{ type: "text", text: "You are Codex." }] },
+        { role: "user", content: "hello" },
+        { role: "system", content: [{ type: "text", text: "Be brief." }] },
+      ]),
+      [
+        {
+          role: "system",
+          content: [
+            { type: "text", text: "You are Codex." },
+            { type: "text", text: "Be brief." },
+          ],
+        },
+        { role: "user", content: "hello" },
+      ],
+    );
+    assert.deepEqual(
+      await send([
+        { role: "system", content: "You are Codex." },
+        { role: "system", content: [{ type: "text", text: "Be brief." }] },
+        { role: "user", content: "hello" },
+      ]),
+      [
+        {
+          role: "system",
+          content: [
+            { type: "text", text: "You are Codex." },
+            { type: "text", text: "Be brief." },
+          ],
+        },
+        { role: "user", content: "hello" },
+      ],
+    );
+
+    // A leading developer message keeps its lead: the coalesced system message
+    // lands ahead of the first turn, not at index 0.
+    assert.deepEqual(
+      await send([
+        { role: "developer", content: "Repo rules." },
+        { role: "system", content: "You are Codex." },
+        { role: "user", content: "hello" },
+        { role: "system", content: "Be brief." },
+      ]),
+      [
+        { role: "developer", content: "Repo rules." },
+        { role: "system", content: "You are Codex.\n\nBe brief." },
+        { role: "user", content: "hello" },
+      ],
+    );
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
+// Hoisting moves instructions the caller placed mid-conversation, so it only
+// runs when the endpoint would otherwise refuse the request. A conversation the
+// measured rule already allows has to reach the upstream exactly as it was
+// sent -- including the developer-role orderings that are legal only because
+// developer is outside the rule.
+test("API forwarder leaves an already-legal Qwen3.8 message order untouched", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const curated = curatedQwen38EffortModel();
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    OPENROUTER_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    OPENROUTER_API_KEY: "TEST_OPENROUTER_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    for (const messages of [
+      // The shape the endpoint documents as correct.
+      [
+        { role: "system", content: "You are Codex." },
+        { role: "user", content: "hello" },
+      ],
+      // Legal because developer is not a turn: the lone system message still
+      // precedes the first user message.
+      [
+        { role: "developer", content: "Repo rules." },
+        { role: "system", content: "You are Codex." },
+        { role: "user", content: "hello" },
+      ],
+      // Two developer messages after a turn -- measured 200, and nothing here
+      // may merge or move them.
+      [
+        { role: "user", content: "hello" },
+        { role: "developer", content: "Repo rules." },
+        { role: "developer", content: "Answer in English." },
+        { role: "user", content: "and now?" },
+      ],
+      // No system message at all is legal by construction.
+      [{ role: "user", content: "hello" }],
+      // Content parts on an already-legal list are forwarded as written.
+      [
+        { role: "system", content: [{ type: "text", text: "You are Codex." }] },
+        { role: "user", content: [{ type: "text", text: "hello" }] },
+      ],
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model: curated.gatewayModel, messages }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(
+        JSON.stringify(upstreamRequests.at(-1).body.messages),
+        JSON.stringify(messages),
+      );
+    }
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
 
 test("API forwarder routes MiniMax M3 streaming tool calls with adaptive thinking", async () => {
   const upstreamRequests = [];
@@ -2717,12 +3302,20 @@ test("API forwarder routes GLM coding-plan models with thinking enabled", async 
     await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
       Authorization: `Bearer ${INTERNAL_KEY}`,
     });
-    // GLM-5.2 has two documented tiers (high/max, upstream default max), so
-    // high must be sent explicitly; GLM-5-Turbo does not support the
-    // parameter and never receives it.
+    // Each entry is clamped onto the tiers Z.ai documents for that model.
+    // GLM-5.2 has two (high/max, upstream default max), so high must be sent
+    // explicitly and anything under it lands on high. GLM-5.3 adds a low tier,
+    // so low must survive instead of being rounded up to high. GLM-5-Turbo
+    // does not support the parameter and never receives it.
     for (const [gatewayModel, upstreamModel, sentEffort, expectedEffort] of [
       ["zai-coding-glm-5-2", "glm-5.2", "xhigh", "max"],
       ["zai-coding-glm-5-2", "glm-5.2", "high", "high"],
+      ["zai-coding-glm-5-2", "glm-5.2", "low", "high"],
+      ["zai-coding-glm-5-3", "glm-5.3", "minimal", "low"],
+      ["zai-coding-glm-5-3", "glm-5.3", "low", "low"],
+      ["zai-coding-glm-5-3", "glm-5.3", "medium", "low"],
+      ["zai-coding-glm-5-3", "glm-5.3", "high", "high"],
+      ["zai-coding-glm-5-3", "glm-5.3", "max", "max"],
       ["zai-coding-glm-5-turbo", "glm-5-turbo", "low", undefined],
     ]) {
       const response = await fetch(
@@ -2750,10 +3343,179 @@ test("API forwarder routes GLM coding-plan models with thinking enabled", async 
       assert.equal(request.headers["chatgpt-account-id"], undefined);
       assert.equal(request.headers["x-codex-installation-id"], undefined);
       assert.equal(request.body.model, upstreamModel);
-      assert.deepEqual(request.body.thinking, { type: "enabled" });
+      assert.deepEqual(request.body.thinking, { type: "enabled", clear_thinking: false });
       assert.equal(request.body.reasoning_effort, expectedEffort);
       assert.equal(request.body.temperature, undefined);
       assert.equal(request.body.top_p, undefined);
+    }
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
+test("API forwarder restores bridged GLM thinking as native reasoning_content", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    ZAI_CODING_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    ZAI_API_KEY: "TEST_ZAI_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "zai-coding-glm-5-3",
+          messages: [
+            { role: "user", content: "first" },
+            {
+              role: "assistant",
+              content: [
+                { type: "thinking", text: "reason one" },
+                { type: "thinking", text: "" },
+                { type: "thinking", thinking: "reason two" },
+                { type: "thinking", signature: "must-not-leak" },
+                { type: "text", text: "visible answer" },
+              ],
+            },
+            { role: "user", content: "follow up" },
+          ],
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const request = upstreamRequests[0].body;
+    const assistant = request.messages[1];
+    assert.equal(assistant.reasoning_content, "reason one\nreason two");
+    assert.deepEqual(assistant.content, [{ type: "text", text: "visible answer" }]);
+    assert.deepEqual(request.thinking, { type: "enabled", clear_thinking: false });
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
+test("API forwarder preserves Z.ai cached-token telemetry before the LiteLLM bridge", async () => {
+  const upstream = await mockServer(async (request, response) => {
+    await bodyJson(request);
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(
+      `data: ${JSON.stringify({
+        id: "chatcmpl-cache",
+        choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }],
+        usage: {
+          prompt_tokens: 1200,
+          completion_tokens: 8,
+          total_tokens: 1208,
+          prompt_tokens_details: { cached_tokens: 800 },
+        },
+      })}\n\ndata: [DONE]\n\n`,
+    );
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    ZAI_CODING_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    ZAI_API_KEY: "TEST_ZAI_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "zai-coding-glm-5-3",
+        stream: true,
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const data = (await response.text())
+      .split(/\r?\n/)
+      .find((line) => line.startsWith("data: {") && line.includes('"usage"'));
+    assert.ok(data);
+    const chunk = JSON.parse(data.slice(5).trim());
+    assert.equal(chunk.usage.prompt_tokens_details.cached_tokens, 800);
+    assert.equal(chunk.usage.prompt_cache_hit_tokens, 800);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
+test("API forwarder bills the Z.ai platform on its own endpoint and key", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ url: request.url, headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    ZAI_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    ZAI_PLATFORM_API_KEY: "TEST_ZAI_PLATFORM_KEY",
+    // The Coding Plan variable is deliberately set too: the metered platform
+    // is a separate product with a separate credential, so a plan key must
+    // never authenticate a pay-per-token turn.
+    ZAI_API_KEY: "TEST_ZAI_CODING_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    // GLM-5.3 carries the documented low tier; GLM-4.7 has no documented
+    // effort ladder at all and must never receive the parameter.
+    for (const [gatewayModel, upstreamModel, sentEffort, expectedEffort] of [
+      ["zai-api-glm-5-3", "glm-5.3", "low", "low"],
+      ["zai-api-glm-5-2", "glm-5.2", "low", "high"],
+      ["zai-api-glm-4-7", "glm-4.7", "high", undefined],
+    ]) {
+      const response = await fetch(
+        `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${INTERNAL_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: gatewayModel,
+            reasoning_effort: sentEffort,
+            messages: [{ role: "user", content: "test" }],
+          }),
+        },
+      );
+      assert.equal(response.status, 200);
+      const request = upstreamRequests.at(-1);
+      assert.equal(request.headers.authorization, "Bearer TEST_ZAI_PLATFORM_KEY");
+      assert.equal(request.body.model, upstreamModel);
+      assert.deepEqual(request.body.thinking, { type: "enabled", clear_thinking: false });
+      assert.equal(request.body.reasoning_effort, expectedEffort);
     }
   } finally {
     await stopChild(forwarder);
@@ -3270,6 +4032,149 @@ test("API forwarder strips web_search_options for Fireworks", async () => {
   }
 });
 
+test("API forwarder keeps Xiaomi MiMo web search options on chat completions", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push(await bodyJson(request));
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    XIAOMI_MIMO_API_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    MIMO_API_KEY: "TEST_MIMO_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "xiaomi-mimo-mimo-v2-5",
+          web_search_options: { search_context_size: "medium" },
+          client_metadata: { workspace: "caller-owned" },
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(response.status, 200, forwarder.testErrors());
+    assert.equal(upstreamRequests[0].model, "mimo-v2.5");
+    assert.deepEqual(upstreamRequests[0].web_search_options, {
+      search_context_size: "medium",
+    });
+    assert.equal(upstreamRequests[0].client_metadata, undefined);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
+// The exact tool Codex 0.147 serializes when web search is on: `web_search`
+// (the binary contains no occurrence of `web_search_preview`), carrying
+// search_content_types beside the rest of the current hosted-search schema.
+// Meta answers that with HTTP 400 "`tools[].search_content_types` is only
+// supported for web_search_preview tools", which fails every turn (#286).
+const CODEX_WEB_SEARCH_TOOL = Object.freeze({
+  type: "web_search",
+  external_web_access: true,
+  indexed_web_access: true,
+  filters: { allowed_domains: ["example.com"] },
+  search_context_size: "medium",
+  search_content_types: ["text", "image"],
+  user_location: { type: "approximate", country: "US" },
+});
+
+test("API forwarder drops the search_content_types Meta refuses, and only for Meta", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ url: request.url, body: await bodyJson(request) });
+    json(response, 200, {
+      id: "resp_test",
+      object: "response",
+      status: "completed",
+      model: "test",
+      output: [],
+    });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    META_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    META_API_KEY: "TEST_META_API_KEY",
+    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    OPENCODE_API_KEY: "TEST_OPENCODE_GO_API_KEY",
+    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const send = async (model, tools) => {
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model, input: "test", tools }),
+    });
+    assert.equal(response.status, 200, forwarder.testErrors());
+    return upstreamRequests.at(-1).body.tools;
+  };
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+
+    // The reported turn: the one refused field goes, the rest of the hosted
+    // search tool and every function tool beside it arrive unchanged. The tool
+    // itself is never dropped -- web search still reaches the model.
+    const shell = { type: "function", name: "shell", parameters: { type: "object" } };
+    const metaTools = await send("meta-muse-spark-1-2-contributor", [
+      CODEX_WEB_SEARCH_TOOL,
+      shell,
+    ]);
+    assert.deepEqual(metaTools, [
+      {
+        type: "web_search",
+        external_web_access: true,
+        indexed_web_access: true,
+        filters: { allowed_domains: ["example.com"] },
+        search_context_size: "medium",
+        user_location: { type: "approximate", country: "US" },
+      },
+      shell,
+    ]);
+
+    // The one tool this endpoint does accept the field on keeps it, so a
+    // caller that speaks Meta's own spelling is not quietly downgraded.
+    const previewTools = await send("meta-muse-spark-1-2-contributor", [
+      { type: "web_search_preview", search_content_types: ["text", "image"] },
+    ]);
+    assert.deepEqual(previewTools, [
+      { type: "web_search_preview", search_content_types: ["text", "image"] },
+    ]);
+
+    // Provider-scoped, not global: OpenAI documents search_content_types on
+    // `web_search`, so the other responses-native providers keep it.
+    const opencodeTools = await send(
+      "responses/opencode-go-responses-gpt-5-6-luna",
+      [CODEX_WEB_SEARCH_TOOL],
+    );
+    assert.deepEqual(opencodeTools, [CODEX_WEB_SEARCH_TOOL]);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("router strips Fireworks web_search_options on routed and compaction requests", async () => {
   const gatewayRequests = [];
   const gateway = await mockServer(async (request, response) => {
@@ -3339,6 +4244,68 @@ test("router strips Fireworks web_search_options on routed and compaction reques
     await stopChild(router);
     await closeServer(gateway.server);
     rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
+test("router normalizes forced tool choices before LiteLLM for auto-tool-choice models", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, { id: "resp_test", object: "response", output: [] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: `Bearer ${CALLER_KEY}`,
+    "Content-Type": "application/json",
+  };
+
+  async function route(model, toolChoice) {
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model, input: "test", tool_choice: toolChoice }),
+    });
+    assert.equal(response.status, 200, router.testErrors());
+    return gatewayRequests.at(-1);
+  }
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+
+    // LiteLLM does its Responses -> Chat Completions translation after the
+    // router, so this must already be auto when it reaches the gateway.
+    const required = await route("ollama-cloud/minimax-m3", "required");
+    assert.equal(required.model, "ollama-cloud-minimax-m3");
+    assert.equal(required.tool_choice, "auto");
+
+    // The collaboration relay uses an object form; it has the same upstream
+    // restriction and therefore must not survive the Responses hop either.
+    const forcedFunction = await route("ollama-cloud/minimax-m3", {
+      type: "function",
+      name: "relay_external_agent_payload",
+    });
+    assert.equal(forcedFunction.tool_choice, "auto");
+
+    // Suppressing tools is not forcing one, and remains necessary for turns
+    // such as compaction that deliberately disable tools.
+    const suppressed = await route("ollama-cloud/minimax-m3", "none");
+    assert.equal(suppressed.tool_choice, "none");
+
+    const absent = await route("ollama-cloud/minimax-m3");
+    assert.equal("tool_choice" in absent, false);
+
+    // The profile remains model-scoped: other Ollama Cloud models preserve a
+    // forced choice so their capability probe and collaboration relay work.
+    const sibling = await route("ollama-cloud/glm-5.2", "required");
+    assert.equal(sibling.tool_choice, "required");
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
   }
 });
 
@@ -3514,7 +4481,7 @@ test("routed compaction records usage and logs on success and on failure", async
     assert.equal(success.totalTokens, 1290);
     await waitForStderr(
       router,
-      /\[nexus\] model=deepseek\/deepseek-v4-pro provider=deepseek status=200/,
+      /\[codex-router\] model=deepseek\/deepseek-v4-pro provider=deepseek status=200/,
     );
 
     failing = true;
@@ -3536,7 +4503,7 @@ test("routed compaction records usage and logs on success and on failure", async
     assert.equal("totalTokens" in failure, false);
     await waitForStderr(
       router,
-      /\[nexus\] model=deepseek\/deepseek-v4-pro provider=deepseek status=502/,
+      /\[codex-router\] model=deepseek\/deepseek-v4-pro provider=deepseek status=502/,
     );
   } finally {
     await stopChild(router);
@@ -3682,7 +4649,8 @@ test("router substitutes a prompt-token estimate a provider reported as zero", a
     };
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(
-      `event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n` +
+        `event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
     );
   });
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-zero-input-"));
@@ -3790,6 +4758,113 @@ test("router substitutes a prompt-token estimate a provider reported as zero", a
   }
 });
 
+// Issue #266: the estimate above is calibrated against text a model reads, but
+// it was measuring the whole serialized body -- and most of a Codex body is
+// `encrypted_content`, the sealed chain of thought on every reasoning item that
+// no routed provider can read. The estimate came out 3.9x-4.7x high and cleared
+// the compaction threshold on every zero-report turn, so the session summarized
+// itself instead of working. End to end because the premise is about the body
+// the router actually builds: reasoning items survive into it, so the bytes are
+// really there to be discounted.
+test("reasoning ciphertext is not billed to the prompt-token estimate", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    const completed = {
+      type: "response.completed",
+      response: {
+        id: "resp_routed",
+        usage: { input_tokens: 0, output_tokens: 12, total_tokens: 12 },
+      },
+    };
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n` +
+        `event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
+    );
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-ciphertext-"));
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    MODEL_ROUTER_STATE_DIR: stateDir,
+  });
+  const headers = {
+    Authorization: "Bearer CODEX_CALLER_SECRET",
+    "Content-Type": "application/json",
+  };
+  // One conversation, sent twice: once as the provider stores it, and once with
+  // the ciphertext removed. The model reads the same words either way.
+  const conversation = "the quick brown fox jumps over the lazy dog. ".repeat(400);
+  const transcript = (ciphertext) => {
+    const input = [];
+    for (let turn = 0; turn < 6; turn += 1) {
+      input.push({
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: `${turn}: ${conversation}` }],
+      });
+      // No summary, which is what a provider returns when it has none to give.
+      // `carryReasoningThroughInput` rewrites a summarized reasoning item into
+      // assistant text and the ciphertext leaves with it -- these are the items
+      // that survive into the body, and the only ones the estimate can get
+      // wrong. The premise assertion below proves they really did survive.
+      input.push({
+        type: "reasoning",
+        id: `rs_${turn}`,
+        summary: [],
+        ...(ciphertext ? { encrypted_content: `gAAAAAB${"x".repeat(40_000)}` } : {}),
+      });
+    }
+    return JSON.stringify({ model: "opencode-go/deepseek-v4-flash", input });
+  };
+  const estimateFor = async (body) => {
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    assert.equal(response.status, 200, router.testErrors());
+    const completed = JSON.parse(
+      (await response.text())
+        .split("\n")
+        .find((line) => line.startsWith("data:") && line.includes("response.completed"))
+        .slice(5),
+    );
+    return completed.response.usage.input_tokens;
+  };
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const sealed = await estimateFor(transcript(true));
+    const plain = await estimateFor(transcript(false));
+
+    // The premise: the router really does forward the ciphertext, so it really
+    // was on the bill. Without this the test would pass on a body that never
+    // carried the bytes in the first place.
+    const forwarded = JSON.stringify(gatewayBodies[0]);
+    assert.ok(
+      forwarded.length > JSON.stringify(gatewayBodies[1]).length * 2,
+      "the routed body did not carry the reasoning ciphertext",
+    );
+
+    // Before the fix the sealed body estimated over 80,000 against the plain
+    // body's ~34,000. The words are identical, so the estimates must be too.
+    assert.ok(
+      Math.abs(sealed - plain) <= 100,
+      `ciphertext moved the estimate: ${sealed} vs ${plain}`,
+    );
+    // And the visible conversation is still counted in full, not discarded
+    // along with the ciphertext.
+    assert.ok(sealed >= Math.ceil((conversation.length * 6) / 4), `estimate ${sealed} too low`);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 // Inventing token counts is a heuristic, however tightly gated, so an operator
 // has to be able to see the provider's own numbers again without downgrading.
 test("the prompt-token estimate can be switched off", async () => {
@@ -3804,7 +4879,8 @@ test("the prompt-token estimate can be switched off", async () => {
     };
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(
-      `event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n` +
+        `event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
     );
   });
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-zero-input-off-"));
@@ -3847,6 +4923,127 @@ test("the prompt-token estimate can be switched off", async () => {
     await stopChild(router);
     await closeServer(gateway.server);
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("router ages consumed large tool results but preserves the newest result frontier", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    json(response, 200, { output: [{ type: "message", role: "assistant", content: "ok" }] });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-tool-result-aging-"));
+  // Aging is opt-in, so this test states the setting it is exercising rather
+  // than relying on a default.
+  writeFileSync(
+    path.join(stateDir, "tool-result-aging.json"),
+    JSON.stringify({ version: 1, enabled: true, nativeEnabled: false }),
+  );
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+  });
+  const large = `old-head\n${"old-middle\n".repeat(4_000)}old-tail`;
+  const input = [
+    { type: "function_call", call_id: "old", name: "exec_command", arguments: "{}" },
+    { type: "function_call_output", call_id: "old", output: large },
+    { type: "message", role: "assistant", content: "I acted on the old result." },
+    ...Array.from({ length: 4 }, (_, index) => [
+      { type: "function_call", call_id: `new-${index}`, name: "exec_command", arguments: "{}" },
+      {
+        type: "function_call_output",
+        call_id: `new-${index}`,
+        output: `${index}:${"n".repeat(34_000)}`,
+      },
+      { type: "message", role: "assistant", content: `used ${index}` },
+    ]).flat(),
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", stream: false, input }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const forwarded = gatewayBodies[0].input;
+    assert.match(forwarded[1].output, /Older tool result compacted by Codex Router/);
+    assert.match(forwarded[1].output, /old-head/);
+    assert.match(forwarded[1].output, /old-tail/);
+    for (let index = 0; index < 4; index += 1) {
+      const result = forwarded.find((item) => item.call_id === `new-${index}` && item.type === "function_call_output");
+      assert.equal(result.output, `${index}:${"n".repeat(34_000)}`);
+    }
+    const [event] = await waitForUsageEvents(stateDir, 1, router);
+    assert.equal(event.toolResultsAged, 1);
+    assert.ok(event.toolResultBytesSaved > 30_000);
+
+    // Settings are read for each routed request, so a UI toggle takes effect
+    // without restarting the router or interrupting a running Codex task.
+    writeFileSync(
+      path.join(stateDir, "tool-result-aging.json"),
+      `${JSON.stringify({ version: 1, enabled: false })}\n`,
+      { mode: 0o600 },
+    );
+    const exactResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", stream: false, input }),
+    });
+    assert.equal(exactResponse.status, 200, await exactResponse.text());
+    assert.equal(gatewayBodies[1].input[1].output, large);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("tool-result aging kill switch forwards the same large output", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    json(response, 200, { output: [{ type: "message", role: "assistant", content: "ok" }] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_TOOL_RESULT_AGING: "0",
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const large = "x".repeat(40_000);
+  const input = [
+    { type: "function_call", call_id: "old", name: "exec_command", arguments: "{}" },
+    { type: "function_call_output", call_id: "old", output: large },
+    { type: "message", role: "assistant", content: "acted" },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", stream: false, input }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(gatewayBodies[0].input[1].output, large);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
   }
 });
 
@@ -4091,5 +5288,771 @@ test("a turn with no image reaches a text-only model untouched", async () => {
     await stopChild(router);
     await closeServer(gateway.server);
     await closeServer(native.server);
+  }
+});
+
+test("a live child turn settles an experimental subagent's proof", async () => {
+  const proofsPath = path.join(
+    mkdtempSync(path.join(os.tmpdir(), "subagent-proofs-e2e-")),
+    "multi-agent-proofs.json",
+  );
+  // Three models in the experimental window: one will prove itself, one will
+  // be rejected structurally, one completes a turn that carries no subagent
+  // marker and must stay untouched.
+  writeFileSync(
+    proofsPath,
+    JSON.stringify({
+      version: 1,
+      proofs: {
+        "deepseek/deepseek-v4-pro": { status: "experimental" },
+        "deepseek/deepseek-v4-flash": { status: "experimental" },
+        "deepseek/deepseek-chat": { status: "experimental" },
+      },
+    }),
+    { mode: 0o600 },
+  );
+  const gateway = await mockServer(async (request, response) => {
+    if (request.url === "/health") {
+      json(response, 200, { ok: true });
+      return;
+    }
+    const body = await bodyJson(request);
+    if (String(body.model || "").includes("flash")) {
+      json(response, 400, { error: { message: "encrypted payload rejected" } });
+      return;
+    }
+    json(response, 200, {
+      id: "resp_child",
+      output: [
+        { type: "message", content: [{ type: "output_text", text: "child done" }] },
+      ],
+      usage: { input_tokens: 12, output_tokens: 3 },
+    });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    MODEL_ROUTER_SUBAGENT_PROOFS: proofsPath,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  const childTurn = (model, headers = {}) =>
+    fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ model, input: "finish the task" }),
+    });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+
+    // A clean completion of a marked child turn is the durable proof.
+    const proven = await childTurn("deepseek/deepseek-v4-pro", {
+      "x-openai-subagent": "review-child",
+    });
+    assert.equal(proven.status, 200);
+
+    // A structural rejection of a marked child turn is the demotion.
+    const rejected = await childTurn("deepseek/deepseek-v4-flash", {
+      "x-openai-subagent": "review-child",
+    });
+    assert.equal(rejected.status, 400);
+
+    // The same success without the subagent marker proves nothing.
+    const unmarked = await childTurn("deepseek/deepseek-chat");
+    assert.equal(unmarked.status, 200);
+
+    const deadline = Date.now() + 3_000;
+    let proofs;
+    while (Date.now() < deadline) {
+      proofs = JSON.parse(readFileSync(proofsPath, "utf8")).proofs;
+      if (
+        proofs["deepseek/deepseek-v4-pro"].status === "proven" &&
+        proofs["deepseek/deepseek-v4-flash"].status === "failed"
+      ) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(proofs["deepseek/deepseek-v4-pro"].status, "proven");
+    assert.equal(proofs["deepseek/deepseek-v4-flash"].status, "failed");
+    assert.match(proofs["deepseek/deepseek-v4-flash"].reason, /400/);
+    assert.equal(proofs["deepseek/deepseek-chat"].status, "experimental");
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+  }
+});
+
+// Issue #257(b). Two things a `proven` slug could not do before: be taken back
+// by a structural rejection on a later turn, and be taken back by a child that
+// answers forever. The first was unreachable because the observer's gate was
+// the experimental window, so promotion on turn one closed the demotion path
+// with it; the second had no signal at all, because a looping child emits
+// nothing but 200s.
+test("a proven subagent is demoted by a later rejection and by a child that never converges", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "subagent-demote-e2e-"));
+  const proofsPath = path.join(stateDir, "multi-agent-proofs.json");
+  // Both already carry the durable proof: this is the state the old observer
+  // stopped looking at.
+  writeFileSync(
+    proofsPath,
+    JSON.stringify({
+      version: 1,
+      proofs: {
+        "deepseek/deepseek-v4-pro": { status: "proven", spawn: { ok: true, status: 200 } },
+        "deepseek/deepseek-v4-flash": { status: "proven", spawn: { ok: true, status: 200 } },
+      },
+    }),
+    { mode: 0o600 },
+  );
+
+  // deepseek-v4-pro declares autoCompact 900000, so its derived ceiling is two
+  // budgets — 1,800,000 tokens of new input — with the child still going. This
+  // series is the runaway shape: grow, get compacted (the prompt count falls),
+  // redo the same opening work, compact again. It crosses on the sixth turn.
+  const promptCounts = [400_000, 900_000, 300_000, 900_000, 300_000, 900_000];
+  let served = 0;
+  const gateway = await mockServer(async (request, response) => {
+    if (request.url === "/health") {
+      json(response, 200, { ok: true });
+      return;
+    }
+    const body = await bodyJson(request);
+    if (String(body.model || "").includes("flash")) {
+      json(response, 400, { error: { message: "encrypted payload rejected" } });
+      return;
+    }
+    const inputTokens = promptCounts[Math.min(served, promptCounts.length - 1)];
+    served += 1;
+    json(response, 200, {
+      id: `resp_child_${served}`,
+      output: [{ type: "message", content: [{ type: "output_text", text: "still working" }] }],
+      usage: { input_tokens: inputTokens, output_tokens: 4 },
+    });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    MODEL_ROUTER_SUBAGENT_PROOFS: proofsPath,
+    // Thread identity resolves against rollout files; point it at empty state
+    // so the test never walks the developer's own ~/.codex/sessions.
+    CODEX_ROUTER_SESSIONS_PATH: path.join(stateDir, "sessions"),
+    CODEX_ROUTER_SESSION_INDEX: path.join(stateDir, "session_index.jsonl"),
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  const spawnThread = "11111111-2222-4333-8444-555555555555";
+  const childTurn = (model, headers = {}) =>
+    fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-openai-subagent": "review-child",
+        ...headers,
+      },
+      body: JSON.stringify({ model, input: "finish the task" }),
+    });
+
+  const proofFor = async (slug, predicate) => {
+    const deadline = Date.now() + 3_000;
+    let proof;
+    while (Date.now() < deadline) {
+      proof = JSON.parse(readFileSync(proofsPath, "utf8")).proofs[slug];
+      if (predicate(proof)) return proof;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return proof;
+  };
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+
+    // A structural rejection after promotion is the same evidence it was
+    // before it, so it takes the proof back.
+    const rejected = await childTurn("deepseek/deepseek-v4-flash", {
+      "thread-id": "99999999-8888-4777-8666-555555555555",
+    });
+    assert.equal(rejected.status, 400);
+    const flash = await proofFor(
+      "deepseek/deepseek-v4-flash",
+      (proof) => proof?.status === "failed",
+    );
+    assert.equal(flash.status, "failed");
+    assert.match(flash.reason, /400/);
+    assert.match(flash.reason, /revoking the child role it had already served/);
+
+    // The looping child. Every turn is a clean 200, so nothing status-shaped
+    // could ever fire; what condemns it is how much of its own budget one
+    // spawn burns while still going.
+    for (let index = 0; index < promptCounts.length; index += 1) {
+      const looping = await childTurn("deepseek/deepseek-v4-pro", {
+        "thread-id": spawnThread,
+      });
+      assert.equal(looping.status, 200, `child turn ${index + 1} failed`);
+    }
+    const pro = await proofFor("deepseek/deepseek-v4-pro", (proof) => proof?.status === "failed");
+    assert.equal(pro.status, "failed", "a child that never converged kept its proof");
+    assert.equal(pro.spawn.turns, promptCounts.length);
+    assert.equal(pro.spawn.newInputTokens, 2_100_000);
+    assert.match(pro.reason, /without converging/);
+    assert.match(pro.reason, /1800000-token ceiling/);
+
+    // Both demotions have to be readable in the log, even under the QUIET the
+    // production LaunchAgent hard-sets: a picker entry that vanishes with no
+    // line explaining it is unexplainable.
+    //
+    // Waited for rather than read straight off, because the demotion writes
+    // the proof file *before* it logs (`settle` in router.mjs), and the log
+    // goes down a pipe -- which node writes asynchronously on macOS. So the
+    // file the loop above polls can already say `failed` while the line
+    // explaining it is still in flight; a bare read caught that ~1% of runs
+    // and blamed the ceiling for a demotion that had in fact already fired.
+    // The wait is on the line's arrival only: what is asserted is unchanged.
+    await waitForStderr(router, /subagent demoted: deepseek\/deepseek-v4-flash/);
+    await waitForStderr(router, /subagent demoted: deepseek\/deepseek-v4-pro/);
+    const errors = router.testErrors();
+    assert.match(errors, /subagent demoted: deepseek\/deepseek-v4-flash/);
+    assert.match(errors, /subagent demoted: deepseek\/deepseek-v4-pro/);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// The whole value of a per-model subagent effort is that it applies in one
+// role and not the other: the same model must keep its normal depth when it is
+// the parent. A setting that leaked into parent turns would quietly re-tune
+// every conversation on that model.
+test("a subagent effort reaches child turns and leaves parent turns alone", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "subagent-effort-e2e-"));
+  // The state directory has to be in the environment *before* the module is
+  // imported: paths.mjs resolves it once at import time, so importing first
+  // and pointing afterwards writes to the real user config instead.
+  const previousStateDir = process.env.MODEL_ROUTER_STATE_DIR;
+  process.env.MODEL_ROUTER_STATE_DIR = stateDir;
+  try {
+    const { setSubagentEffort } = await import(
+      `../src/multi-agent-state.mjs?e2e=${Date.now()}`
+    );
+    setSubagentEffort("deepseek/deepseek-v4-pro", "max");
+  } finally {
+    if (previousStateDir === undefined) delete process.env.MODEL_ROUTER_STATE_DIR;
+    else process.env.MODEL_ROUTER_STATE_DIR = previousStateDir;
+  }
+
+  const seen = [];
+  const gateway = await mockServer(async (request, response) => {
+    if (request.url === "/health") {
+      json(response, 200, { ok: true });
+      return;
+    }
+    const body = await bodyJson(request);
+    seen.push({ model: body.model, effort: body.reasoning_effort });
+    json(response, 200, {
+      id: "resp_effort",
+      output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }],
+      usage: { input_tokens: 5, output_tokens: 1 },
+    });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  const turn = (model, headers = {}) =>
+    fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ model, input: "go", reasoning_effort: "low" }),
+    });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+
+    const child = await turn("deepseek/deepseek-v4-pro", {
+      "x-openai-subagent": "review-child",
+    });
+    assert.equal(child.status, 200);
+
+    const parent = await turn("deepseek/deepseek-v4-pro");
+    assert.equal(parent.status, 200);
+
+    // A model with no configured effort is untouched in either role.
+    const other = await turn("deepseek/deepseek-v4-flash", {
+      "x-openai-subagent": "review-child",
+    });
+    assert.equal(other.status, 200);
+
+    assert.equal(seen.length, 3);
+    assert.equal(seen[0].effort, "max", "the child turn did not receive the configured effort");
+    assert.equal(seen[1].effort, "low", "the parent turn was re-tuned by a subagent setting");
+    assert.equal(seen[2].effort, "low", "an unconfigured model was altered");
+  } finally {
+    // The router meters a turn *after* its response head is on the wire, and
+    // `recordUsageEvent` re-creates the state directory (`mkdirSync` with
+    // `recursive`) before appending. A bare `kill` only queues the signal, so
+    // an unawaited router is still appending while `rmSync` walks the same
+    // directory -- it unlinks the children, the router re-creates one, and the
+    // final `rmdir` fails with ENOTEMPTY. Wait for the process to be gone
+    // before removing what it writes into.
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// Codex never sends a flat `reasoning_effort`: on the Responses API the depth
+// travels inside `reasoning`, as `{ effort, summary }`. The gateway derives its
+// own effort from that object whenever it is present and that derived value
+// wins, so an override written only to the flat field is dropped before any
+// provider sees it -- measured against the real LiteLLM adapter, where the
+// child turn reached the provider at the parent's effort. Drive the authentic
+// client shape so the override has to survive the same precedence.
+test("a subagent effort overrides the effort Codex nested in the reasoning object", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "subagent-effort-nested-"));
+  // Written directly rather than through setSubagentEffort: paths.mjs resolves
+  // the state directory once per process, so a second in-process import lands
+  // in whichever directory the first test claimed.
+  writeFileSync(
+    path.join(stateDir, "multi-agent-settings.json"),
+    `${JSON.stringify({
+      version: 2,
+      mode: "all",
+      enabled: [],
+      disabled: [],
+      efforts: { "deepseek/deepseek-v4-pro": "max" },
+    })}\n`,
+    { mode: 0o600 },
+  );
+
+  const seen = [];
+  const gateway = await mockServer(async (request, response) => {
+    if (request.url === "/health") {
+      json(response, 200, { ok: true });
+      return;
+    }
+    const body = await bodyJson(request);
+    seen.push({ reasoning: body.reasoning, effort: body.reasoning_effort });
+    json(response, 200, {
+      id: "resp_effort_nested",
+      output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }],
+      usage: { input_tokens: 5, output_tokens: 1 },
+    });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  // Exactly what Codex puts on the wire: a reasoning object, no flat field.
+  const turn = (headers = {}) =>
+    fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({
+        model: "deepseek/deepseek-v4-pro",
+        input: "go",
+        reasoning: { effort: "low", summary: "auto" },
+      }),
+    });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+
+    const child = await turn({ "x-openai-subagent": "review-child" });
+    assert.equal(child.status, 200);
+    const parent = await turn();
+    assert.equal(parent.status, 200);
+
+    assert.equal(seen.length, 2);
+    assert.equal(
+      seen[0].reasoning?.effort,
+      "max",
+      "the child turn still carried the parent's nested effort",
+    );
+    assert.equal(
+      seen[0].reasoning?.summary,
+      "auto",
+      "the override discarded the rest of the reasoning object",
+    );
+    assert.equal(seen[0].effort, "max", "the flat field lost the override");
+    assert.equal(
+      seen[1].reasoning?.effort,
+      "low",
+      "the parent turn was re-tuned by a subagent setting",
+    );
+    assert.equal(seen[1].effort, undefined, "the parent turn grew a flat effort field");
+  } finally {
+    // See the sibling test above: removing the state directory out from under
+    // a router that has been signalled but not awaited is what produced the
+    // ENOTEMPTY on this directory.
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// #256: spawning a subagent on opencode-go/deepseek-v4-flash made every
+// following parent request 400 with "The `reasoning_content` in the thinking
+// mode must be passed back to the API". LiteLLM's Responses->chat translation
+// drops `reasoning` input items outright, and the carry that compensates for
+// that only recognized a tool loop -- reasoning immediately before a
+// function_call. A subagent ends in prose, so its reasoning was thrown away
+// and the provider was asked to continue a thinking turn it had never been
+// shown. The second reporter saw the same 400 with "Compact old tool results"
+// on, so aging is switched on here as well: it must age the tool result and
+// still leave every reasoning run carried.
+test("reasoning survives the replay onto tool-call and prose assistant turns alike", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    json(response, 200, { output: [{ type: "message", role: "assistant", content: "ok" }] });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "reasoning-replay-state-"));
+  writeFileSync(
+    path.join(stateDir, "tool-result-aging.json"),
+    `${JSON.stringify({ version: 1, enabled: true })}\n`,
+    "utf8",
+  );
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const reasoning = (id, text) => ({
+    type: "reasoning",
+    id,
+    summary: [{ type: "summary_text", text }],
+    content: null,
+  });
+  const input = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "check the log" }] },
+    // A single turn can emit several reasoning items before it acts.
+    reasoning("rs_1", "The log lives under /var/log."),
+    reasoning("rs_2", "Tail it rather than read the whole file."),
+    { type: "function_call", call_id: "old", name: "exec_command", arguments: "{}" },
+    { type: "function_call_output", call_id: "old", output: "x".repeat(40_000) },
+    ...[1, 2, 3, 4].map((n) => ({
+      type: "function_call_output",
+      call_id: `call-${n}`,
+      output: `small result ${n}`,
+    })),
+    // The shape a subagent always ends on, and the one that used to be lost.
+    reasoning("rs_3", "Nothing in the tail looks wrong, so I can say so."),
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "All clear." }] },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "and now?" }] },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", stream: false, input }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const forwarded = gatewayBodies[0].input;
+    const text = (item) =>
+      (Array.isArray(item?.content) ? item.content : [])
+        .map((part) => (typeof part?.text === "string" ? part.text : ""))
+        .join("\n");
+
+    // The aging pass really ran: without it this assertion passes for the
+    // wrong reason, and the compaction half of the report goes untested.
+    const older = forwarded.find(
+      (item) => item?.type === "function_call_output" && item.call_id === "old",
+    );
+    assert.match(older.output, /compacted by Codex Router/);
+
+    // The whole reasoning run reaches the assistant message LiteLLM will fold
+    // the tool call into, not just the item nearest the call.
+    const callIndex = forwarded.findIndex((item) => item?.type === "function_call");
+    const beforeCall = forwarded[callIndex - 1];
+    assert.equal(beforeCall.type, "message");
+    assert.equal(beforeCall.role, "assistant");
+    assert.match(text(beforeCall), /The log lives under \/var\/log\./);
+    assert.match(text(beforeCall), /Tail it rather than read the whole file\./);
+
+    // The prose answer carries its own reasoning and still says what it said.
+    const answer = forwarded.find(
+      (item) => item?.type === "message" && item.role === "assistant" && /All clear\./.test(text(item)),
+    );
+    assert.match(text(answer), /Nothing in the tail looks wrong/);
+
+    // One assistant message per turn: two in a row is what several strict
+    // chat-completions providers reject.
+    for (let index = 1; index < forwarded.length; index += 1) {
+      const previous = forwarded[index - 1];
+      const current = forwarded[index];
+      if (previous?.role !== "assistant" || current?.role !== "assistant") continue;
+      assert.fail("two assistant messages ended up back to back");
+    }
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("GLM reasoning stays structurally separate while crossing the Responses bridge", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    json(response, 200, { output: [{ type: "message", role: "assistant", content: "ok" }] });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "glm-reasoning-replay-state-"));
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const input = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "first" }] },
+    {
+      type: "reasoning",
+      id: "rs_glm_tool",
+      summary: [{ type: "summary_text", text: "tool-call reasoning" }],
+      content: null,
+    },
+    { type: "function_call", call_id: "glm-call", name: "lookup_number", arguments: "{}" },
+    { type: "function_call_output", call_id: "glm-call", output: "323" },
+    {
+      type: "reasoning",
+      id: "rs_glm_answer",
+      summary: [{ type: "summary_text", text: "provider-native reasoning" }],
+      content: null,
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "visible answer" }],
+    },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "follow up" }] },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "zai-coding/glm-5.3", stream: false, input }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const forwarded = gatewayBodies[0].input;
+    const callIndex = forwarded.findIndex((item) => item?.type === "function_call");
+    const beforeCall = forwarded[callIndex - 1];
+    assert.equal(beforeCall?.role, "assistant");
+    assert.deepEqual(beforeCall.content, [{ type: "thinking", text: "tool-call reasoning" }]);
+
+    const assistant = forwarded.find(
+      (item) =>
+        item?.type === "message" &&
+        item.role === "assistant" &&
+        Array.isArray(item.content) &&
+        item.content.some((part) => part?.text === "visible answer"),
+    );
+    assert.ok(assistant);
+    const parts = assistant.content;
+    assert.deepEqual(parts[0], { type: "thinking", text: "provider-native reasoning" });
+    assert.deepEqual(parts[1], { type: "output_text", text: "visible answer" });
+    assert.equal(
+      parts.filter((part) => part.type === "output_text").some((part) => /reasoning/.test(part.text)),
+      false,
+      "provider reasoning leaked into visible assistant content",
+    );
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// #292: the same "The `reasoning_content` in the thinking mode must be passed
+// back to the API" 400, but reached without a subagent and without a tool call
+// anywhere -- a thinking-mode answer followed by an ordinary follow-up in the
+// same conversation. #256's coverage drives that carry through a tool loop and
+// a subagent-shaped tail in one array, so the plainest path a user can walk is
+// only covered incidentally there. Pinned separately: a regression that broke
+// just this shape would still leave #256's test green.
+test("a plain follow-up after a thinking turn replays its reasoning", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    json(response, 200, { output: [{ type: "message", role: "assistant", content: "ok" }] });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "reasoning-followup-state-"));
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  // Exactly what Codex replays on turn two: the first prompt, the reasoning it
+  // stored for the thinking answer (`content: null`, which is the shape
+  // LiteLLM's Responses->chat translation drops outright), that answer, and
+  // the follow-up. No function_call, no custom_tool_call, no subagent.
+  const input = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "who wrote Dune?" }] },
+    {
+      type: "reasoning",
+      id: "rs_292",
+      summary: [{ type: "summary_text", text: "Dune is Frank Herbert's, published 1965." }],
+      content: null,
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Frank Herbert." }],
+    },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "and the sequel?" }] },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "opencode-go/deepseek-v4-flash",
+        stream: false,
+        input,
+      }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const forwarded = gatewayBodies[0].input;
+    const text = (item) =>
+      (Array.isArray(item?.content) ? item.content : [])
+        .map((part) => (typeof part?.text === "string" ? part.text : ""))
+        .join("\n");
+
+    // The reasoning reaches the provider on the assistant turn it produced --
+    // as message content, the only place the translation preserves it.
+    const answer = forwarded.find(
+      (item) => item?.type === "message" && item.role === "assistant",
+    );
+    assert.ok(answer, "the assistant turn never reached the provider");
+    assert.match(
+      text(answer),
+      /Dune is Frank Herbert's, published 1965\./,
+      "the thinking-mode reasoning was dropped before the provider saw it",
+    );
+    // And the answer itself is still there: the carry prepends, never replaces.
+    assert.match(text(answer), /Frank Herbert\./);
+    // The follow-up is still the last thing the provider is asked about.
+    assert.equal(forwarded.at(-1).role, "user");
+
+    // One assistant message, not two in a row -- the shape opencode Go's
+    // Console endpoint rejects outright.
+    for (let index = 1; index < forwarded.length; index += 1) {
+      if (forwarded[index - 1]?.role !== "assistant") continue;
+      if (forwarded[index]?.role !== "assistant") continue;
+      assert.fail("two assistant messages ended up back to back");
+    }
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+
+test("router repairs malformed Z.ai message envelopes after LiteLLM Responses translation", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "zai-responses-compat-router-"));
+  const stateDir = path.join(testRoot, "state");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(
+    path.join(stateDir, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["zai-coding"] })}\n`,
+  );
+  const gateway = await mockServer(async (request, response) => {
+    if (request.method === "GET") {
+      json(response, 200, { ok: true, credential_present: true, credential_source: "test" });
+      return;
+    }
+    await bodyJson(request);
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    const events = [
+      { type: "response.output_item.added", output_index: 0, model: "zai-coding-glm-5-3", item: { id: "rs_1", type: "reasoning", status: "in_progress", summary: [] } },
+      { type: "response.output_item.done", output_index: 0, sequence_number: 6, model: "zai-coding-glm-5-3", item: { id: "rs_1", type: "reasoning", summary: [] } },
+      { type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: "msg_1", model: "zai-coding-glm-5-3", delta: "ROUTER_OK" },
+      { type: "response.output_text.done", output_index: 0, content_index: 0, item_id: "msg_1", model: "zai-coding-glm-5-3", text: "ROUTER_OK" },
+      { type: "response.content_part.done", output_index: 0, content_index: 0, item_id: "msg_1", model: "zai-coding-glm-5-3", part: { type: "reasoning_text", reasoning: "private reasoning" } },
+      { type: "response.output_item.done", output_index: 0, sequence_number: 1, model: "zai-coding-glm-5-3", item: { id: "msg_1", type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: "ROUTER_OK", annotations: [] }] } },
+      { type: "response.completed", response: { id: "resp_1", status: "completed", output: [], usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 } } },
+    ];
+    response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_SHOW_ALL_MODELS: "0",
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "zai-coding/glm-5.3", input: "test", stream: true }),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    const events = text.split(/\r?\n/)
+      .filter((line) => line.startsWith("data: {"))
+      .map((line) => JSON.parse(line.slice(5).trim()));
+    const deltaIndex = events.findIndex((event) => event.type === "response.output_text.delta");
+    assert.equal(events[deltaIndex - 2]?.type, "response.output_item.added");
+    assert.equal(events[deltaIndex - 2]?.item?.type, "message");
+    assert.equal(events[deltaIndex - 2]?.output_index, 1);
+    assert.equal(events[deltaIndex - 1]?.type, "response.content_part.added");
+    assert.equal(events[deltaIndex]?.output_index, 1);
+    const partDone = events.find((event) => event.type === "response.content_part.done");
+    assert.deepEqual(partDone?.part, { type: "output_text", text: "ROUTER_OK", annotations: [] });
+    assert.ok(!text.includes("private reasoning"));
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(testRoot, { recursive: true, force: true });
   }
 });

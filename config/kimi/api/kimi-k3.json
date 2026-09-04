@@ -8,7 +8,7 @@
       "provider": "kimi-api",
       "listed": true,
       "multiAgentVersion": "v2",
-      "displayName": "Kimi K3 (Kimi Platform API)",
+      "displayName": "Kimi K3 (API)",
       "description": "Kimi K3 using a separately billed Kimi Platform API key.",
       "priority": 5,
       "defaultEffort": "max",

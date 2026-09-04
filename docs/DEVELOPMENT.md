@@ -59,6 +59,15 @@ unknown provider kinds, duplicate provider IDs, duplicate public slugs,
 duplicate gateway model IDs, missing credential metadata, and incomplete picker
 metadata.
 
+Remote anonymous providers are a separate, tightly constrained mode. A
+provider with `authMode: "anonymous"` must use one of the fixed official
+endpoints allowlisted in `src/model-registry.mjs`, must not declare a
+credential or a base-URL override, and must declare an `anonymousModelPolicy`
+and user-facing `anonymousNote`. Discovery and user-model validation enforce
+that policy so a free route cannot be used to reach paid model IDs. This mode
+is for documented provider-side free exceptions; it is not an alternative
+form of arbitrary keyless hosting (keyless providers remain loopback-only).
+
 Models may declare `serviceTiers` as `{ id, name, description? }` entries only
 when the upstream is verified to honor those request values. The catalog
 exposes them as opt-in choices and always keeps standard service as the
@@ -112,7 +121,12 @@ npm ci
 npm run check
 npm test
 sh -n install.sh
-for file in bin/*; do sh -n "$file"; done
+for file in bin/*; do
+  case "$file" in
+    *.mjs) node --check "$file" ;;
+    *) sh -n "$file" ;;
+  esac
+done
 npm audit --omit=dev
 ```
 

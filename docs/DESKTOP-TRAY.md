@@ -21,7 +21,7 @@ and disables its activity-pill switch; router monitoring continues normally.
 ## What it shows
 
 - The compact pill shows router state, the active model, today's tokens, and
-  the active provider's weekly percentage.
+  the active provider's weekly percentage left.
 - Hovering the pill expands a seven-day daily token graph. The series is
   refreshed in the background rather than recalculated on every hover.
 - The panel shows the same daily graph at a larger size. Hover any point for
@@ -33,47 +33,123 @@ and disables its activity-pill switch; router monitoring continues normally.
 - **Connections** includes a **Use without OpenAI login** switch for new Codex
   sessions. It requires a connected, enabled external provider and restores the
   prior model-provider setting when switched off.
-- **Models** has three accordions. **Apps** chooses which editors receive the
-  selected models, **Subagent models** exposes every enabled model, or only
-  selected models, as Codex v2 subagent overrides, and **Model picker** hides or
-  shows individual models without changing their provider connection.
-
-## Apps: Codex and Claude Code
-
-Codex always receives the selected models through its merged catalog. Claude
-Code is off by default and works differently: it has no catalog file, so the
-switch writes `ANTHROPIC_BASE_URL`, a credential, and
-`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` into the user-scoped
-`~/.claude/settings.json` (`%USERPROFILE%\.claude\settings.json` on Windows) and
-Claude Code then discovers the models over HTTP at startup. Every other setting
-in that file is preserved, and switching off removes only those three keys.
-
-Hiding a model in **Model picker** withholds it from both apps, so the two
-surfaces cannot drift apart.
-
-Claude Code keeps a discovered model only when its id contains `claude` or
-`anthropic`, so routed models are published under an `anthropic-router/` prefix
-with their real name in `display_name`. Without it, most routed models would be
-dropped from the picker with no error.
-
-Turning the switch on has consequences worth stating plainly:
-
-- Claude Code stops using the claude.ai subscription and bills each request to
-  the provider behind the router.
-- Remote Control and voice dictation become unavailable, and `/fast` reports
-  unavailable, because those check `api.anthropic.com` directly.
-- Anthropic does not support routing Claude Code to non-Claude models through
-  any gateway.
-
-Claude Code must be fully restarted after the switch changes. Routed Claude Code
-turns are not yet metered into the token graphs, which currently cover Codex
-traffic only.
+- **Models** has three accordions: **Subagent models** controls which
+  registry-proven v2 models remain available as Codex subagent overrides, and
+  **Model picker** is a persisted allowlist for individual router models
+  without changing their provider connection. Models added in curation are
+  selected automatically.
+- **Local LLMs** installs, enables, and removes Ollama models on this machine.
+  Installs poll their detached download worker and show live percentage;
+  removals keep a visible operation banner even when the installed row
+  disappears immediately. A completed download is hidden after its model is
+  removed, so stale `ready · 100%` state never implies that it is still on disk.
+  If Ollama removal succeeds but the Codex catalog cannot be refreshed, the
+  status remains **Model removed** with a catalog-refresh warning rather than
+  reporting a false removal failure.
+  Both operations expose a persistent status bar while running and a **Cancel**
+  action. Cancelling clears the operation card after the worker is stopped. The
+  control plane serializes install/removal claims and returns an existing
+  operation for repeated requests, so a double-click cannot launch duplicate
+  Ollama workers.
+  The Windows/Linux panel also shows the full router catalog under **Discover
+  Ollama**, grouped by family with search, fit warnings, cloud-only labels, and
+  a download action for every local tag. New or uncatalogued Ollama tags remain
+  installable through the tag or model-page URL field.
+- **Usage** shows the active or most recently used model's observed output
+  throughput when the upstream reports output tokens. The rate is calculated
+  from the streamed generation phase of the latest 20 clean, successful
+  replies, excluding queueing, prompt processing, retries, and historical rows
+  that predate generation timing.
+- **Status** mirrors the macOS live view with in-flight requests, elapsed time,
+  model speed, and quota reset times. Usage also includes all-provider and
+  tokens-by-model summaries.
+- **Connections** includes signed routing, login-free mode, tray presence
+  (always or while Codex/ChatGPT is running), one-click OAuth **Install & Sign
+  In**, and Update/Fix maintenance actions.
+- **Vision bridge** exposes the shared native/hosted engine and effort
+  selectors, local vision downloads, benchmark/use actions, and the same
+  default-on/fail-closed behavior as macOS. Windows follow mode polls the
+  `ChatGPT.exe`/`codex.exe` process list, hides the companion when both quit,
+  and stops/restarts the router only after the same idle grace period.
 
 The status mark uses Thinking Orbs **Shaping** while idle, **Thinking** while a
 model is generating, and **Solving** for errors. Starting retains its colored
 status dot, and the Error label remains explicit. A low-contrast edge signal
 appears only while generating. The app honors the system's reduced-motion
 preference.
+
+## Opening it in a browser instead
+
+The same panel is served by the router you have already started, so there is
+nothing to build, download, or find in the tray:
+
+```powershell
+.\codex-router.ps1 panel
+```
+
+```sh
+./bin/panel
+```
+
+That opens your default browser on the companion. The address carries this
+machine's router capability, so treat it as a password: the command prints it
+redacted, and `--print` is the only way to get the literal URL. Do not paste it
+into chat, an issue, or a screen share.
+
+The browser panel is read-only by design. Saving an API key is not something to
+expose to any page that learns the capability, so those commands stay in the
+tray and the desktop shells.
+
+## Building without a Rust toolchain
+
+The Tauri companion needs Rust and Cargo. If they are not installed,
+`tray install` builds the Electron shell instead, which needs only the Node the
+router install already required:
+
+```powershell
+.\codex-router.ps1 companion
+```
+
+It renders `apps/desktop/ui` verbatim through the same command table, so it is
+the same companion in a different host, and it registers the same logon task.
+Select it explicitly with the command above; `companion status`, `start`,
+`stop`, `restart`, and `uninstall` behave as the tray actions do.
+
+On Linux, `./bin/model-router-tray` makes the same choice and falls back the
+same way.
+
+One caveat worth knowing: npm 11 refuses install scripts unless they are
+approved, and electron downloads its runtime from one. `npm ci` therefore exits
+0 with the package installed and no runtime, and the app then fails to start
+with nothing pointing at the cause. `scripts/build-electron-companion.ps1`
+fetches the runtime directly and refuses to report success without it, so use
+that script rather than a bare `npm ci`.
+
+## Downloading a prebuilt binary
+
+Building needs a Rust toolchain and several minutes of compilation, which is a
+lot to ask of someone who only wants to run the companion. You do not have to:
+
+**From a release (recommended).** Every release attaches the companion for
+Windows and Linux, checksummed in `SHA256SUMS` and covered by the same build
+provenance attestation as the source archives:
+
+| Asset | Platform |
+| --- | --- |
+| `codex-router-tray-<version>-windows-x64.exe` | Windows 10/11 |
+| `codex-router-tray-<version>-linux-x64` | Linux |
+
+Download it and run it. Nothing else to install.
+
+**From a CI run (for unreleased changes).** Open the **Actions** tab, pick a
+green **CI** run, and download the **codex-router-tray-Windows** artifact (or
+**codex-router-tray-Linux**) from its Artifacts section. Unzip and run
+`codex-router-desktop.exe`.
+
+Windows 10 and 11 already ship the WebView2 runtime the companion needs, so
+there is nothing else to install. To have it start at logon as well, point the
+tray command at the downloaded binary's location, or build in place with
+`./codex-router.ps1 tray`.
 
 ## Build prerequisites
 
@@ -114,53 +190,27 @@ Start-Process .\apps\desktop\src-tauri\target\release\codex-router-desktop.exe
 Pass `-BinaryOnly` for an unbundled executable. Installer artifacts are written
 under `apps\desktop\src-tauri\target\release\bundle` by a full build.
 
-## Refreshing the model catalog
+## Starting at logon
+
+`install.ps1 -WithTray` builds the companion and registers a `Codex Router
+Tray` scheduled task that runs it at logon, separately from the router's own
+`Codex Router` task so stopping one never takes the other down. The same task
+is managed directly with:
 
 ```powershell
-.\codex-router.ps1 refresh-catalog
+node src\control.mjs tray enable    # build required first; also starts it now
+node src\control.mjs tray status
+node src\control.mjs tray disable
 ```
 
-or `./bin/refresh-catalog` on POSIX. Both run `src/refresh-catalog.mjs`, which
-disables routing, recaptures Codex's native catalog, then restores routing -
-including when the refresh itself fails.
+Quitting from the tray menu keeps it quit: the restart setting covers a crash,
+not a clean exit, so the tray returns at the next logon rather than reappearing
+immediately. Linux has no supervisor — launch it with `./bin/model-router-tray`
+— and the tray commands say so instead of reporting a silent success.
 
-Do not hand-run `catalog.mjs --refresh-native` with routing enabled: it refuses
-to snapshot an already-merged catalog and silently reuses the stale capture.
-
-## Windows without a toolchain
-
-Building locally needs Node, npm and cargo. If you would rather not install
-Rust, take the CI build instead:
-
-```powershell
-.\scripts\windows\nexus-tray.ps1
-```
-
-or double-click `scripts\windows\Nexus Tray.bat`. It pulls the executable from
-the rolling `tray-latest` prerelease that `.github/workflows/build-windows.yml`
-publishes, installs it to `%LOCALAPPDATA%\Nexus\tray`, and starts it. Re-running
-it is the update: the download is compared by hash and only replaces the local
-copy when the build has actually changed. Pass `-NoLaunch` to update in place.
-
-For a Desktop shortcut carrying the Nexus icon, run this once, adjusting the
-checkout path:
-
-```powershell
-$checkout = "$env:USERPROFILE\Documents\nexus"
-$link = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:USERPROFILE\Desktop\Nexus Tray.lnk")
-$link.TargetPath = "$checkout\scripts\windows\Nexus Tray.bat"
-$link.WorkingDirectory = "$checkout\scripts\windows"
-$link.IconLocation = "$checkout\assets\icon\nexus.ico"
-$link.Save()
-```
-
-Shortcut rather than a copy of the `.bat`: the batch file calls the PowerShell
-script sitting next to it, so moving it on its own breaks that reference.
-
-This route deliberately bypasses `bin/model-router-tray`, which fingerprints
-the tray's source files and compares them against a stamp beside the binary. A
-downloaded build always reads as stale to it, so it would try to rebuild from
-source - exactly the toolchain you were avoiding.
+Windows 11 hides new tray icons in the `^` overflow next to the clock. Drag the
+icon onto the taskbar to pin it; an unpinned icon is the most common reason the
+companion looks like it never started.
 
 The app discovers the router checkout from `MODEL_ROUTER_SOURCE_ROOT`, a saved
 bundle pointer, the source tree during development, or the standard install

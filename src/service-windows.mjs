@@ -16,11 +16,27 @@ import {
   STATE_DIR,
   TARGET,
 } from "./paths.mjs";
+import {
+  clearServiceProcessState,
+  readServiceProcessState,
+  serviceProcessOwns,
+} from "./service-process.mjs";
+import { protectPrivateFile } from "./file-security.mjs";
+import { serviceProxyEnvironment } from "./proxy-environment.mjs";
+import { assertServiceWriteIsolated } from "./service-write-guard.mjs";
 
 const effectivePlatform = process.env.CODEX_ROUTER_SERVICE_PLATFORM || process.platform;
 const command = process.argv[2] || "status";
 const renderCommands = new Set(["render", "render-launcher", "render-task"]);
-const taskName = "Nexus";
+const taskName = "Codex Router";
+const guardLauncherWrite = () => assertServiceWriteIsolated(STATE_DIR, {
+  redirected: Boolean(
+    process.env.MODEL_ROUTER_STATE_DIR || process.env.CODEX_ROUTER_STATE_DIR,
+  ),
+  label: "service launchers",
+  override: "MODEL_ROUTER_STATE_DIR",
+});
+
 const wrapperPath = path.join(STATE_DIR, "start-codex-router.cmd");
 const launcherPath = path.join(STATE_DIR, "start-codex-router-hidden.vbs");
 
@@ -53,6 +69,7 @@ function wrapper() {
     CODEX_ROUTER_OAUTH_PORT: String(PORTS.oauth),
     CODEX_ROUTER_PORT: String(PORTS.router),
     CODEX_ROUTER_API_PORT: String(PORTS.api),
+    ...serviceProxyEnvironment(),
     // The LiteLLM gateway is a Python process. Force UTF-8 output so its
     // startup banner and logs do not crash on Windows systems whose default
     // ANSI/OEM code page is not UTF-8 (e.g. Russian cp1251), where Python
@@ -61,7 +78,7 @@ function wrapper() {
     PYTHONUTF8: "1",
     ...(process.env.KIMI_CODE_HOME ? { KIMI_CODE_HOME: process.env.KIMI_CODE_HOME } : {}),
   };
-  return `@echo off\r\n${Object.entries(variables)
+  return `@echo off\r\nsetlocal DisableDelayedExpansion\r\n${Object.entries(variables)
     .map(([key, value]) => `set "${key}=${cmdEscape(value)}"`)
     .join("\r\n")}\r\n"${cmdEscape(process.execPath)}" "${cmdEscape(start)}" >> "${cmdEscape(LOG_PATH)}" 2>&1\r\n`;
 }
@@ -106,11 +123,26 @@ function schtasks(args, options = {}) {
 }
 
 function writeAtomic(target, contents) {
+  guardLauncherWrite();
   const temporary = `${target}.tmp.${process.pid}`;
-  writeFileSync(temporary, contents);
-  // renameSync replaces an existing destination on Windows, so reinstalling
-  // over an older launcher pair is a plain overwrite rather than a conflict.
-  renameSync(temporary, target);
+  try {
+    writeFileSync(temporary, contents, { mode: 0o600 });
+    // Proxy URLs may contain credentials. Protect both the temporary file and
+    // the replaced launcher so Windows does not leave the secret readable via
+    // inherited ACLs (POSIX mode bits are kept in step for deterministic tests).
+    protectPrivateFile(temporary);
+    // renameSync replaces an existing destination on Windows, so reinstalling
+    // over an older launcher pair is a plain overwrite rather than a conflict.
+    renameSync(temporary, target);
+    protectPrivateFile(target);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // Best effort cleanup; preserve the original write/ACL error.
+    }
+    throw error;
+  }
 }
 
 function writeLaunchers() {
@@ -195,6 +227,12 @@ const TASK_STOP_POLL_MS = 250;
 // Every state query has to return for the deadline above to mean anything, so a
 // wedged PowerShell is capped rather than allowed to hang the install outright.
 const TASK_STATE_TIMEOUT_MS = 15_000;
+// Task Scheduler can report Ready before the detached cmd/node descendants
+// have gone away. Give the verified tree and its ports their own bounded wait
+// after task state changes, so restart never races the old listener.
+const SERVICE_TREE_STOP_TIMEOUT_MS = 15_000;
+const SERVICE_TREE_STOP_POLL_MS = 250;
+const SERVICE_TREE_COMMAND_TIMEOUT_MS = 2_000;
 
 function sleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
@@ -211,75 +249,86 @@ function waitForTaskToStop() {
   }
 }
 
-function listeningPid(port) {
+function servicePorts(state) {
+  const ports = state?.ports && typeof state.ports === "object" ? state.ports : PORTS;
+  return [...new Set(Object.values(ports).filter((port) => Number.isSafeInteger(port) && port > 0))];
+}
+
+// `taskkill /T /F` is the ownership boundary. This netstat check is only a
+// final readiness guard: if an unrelated process owns one of the configured
+// ports it is never killed, and restart waits until the normal readiness check
+// can report the conflict instead of claiming the old tree was stopped.
+function managedPortStillListening(state) {
   try {
     const output = execFileSync("netstat.exe", ["-ano", "-p", "tcp"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      timeout: SERVICE_TREE_COMMAND_TIMEOUT_MS,
+      windowsHide: true,
     });
-    for (const line of output.split(/\r?\n/)) {
-      const columns = line.trim().split(/\s+/);
-      if (columns.length < 5) continue;
-      const [, local, , state, pid] = columns;
-      if (state !== "LISTENING" || !local.endsWith(`:${port}`)) continue;
-      const parsed = Number(pid);
-      if (Number.isInteger(parsed) && parsed > 0) return parsed;
-    }
+    const ports = new Set(servicePorts(state).map((port) => `:${port}`));
+    return String(output)
+      .split(/\r?\n/)
+      .some((line) => {
+        const fields = line.trim().split(/\s+/);
+        const local = String(fields[1] || "");
+        const colon = local.lastIndexOf(":");
+        const suffix = colon >= 0 ? local.slice(colon) : local;
+        return fields[0] === "TCP" && fields[3] === "LISTENING" && ports.has(suffix);
+      });
   } catch {
-    // No netstat, no reclaim; the caller falls back to the task state alone.
+    // A missing/blocked netstat cannot prove a listener is present. The
+    // identity-checked process tree is still terminated below, and the normal
+    // health probe remains the final readiness check.
+    return false;
   }
-  return undefined;
 }
 
-function imageName(pid) {
+function stopOwnedServiceTree() {
+  const state = readServiceProcessState();
+  if (!state || state.pid === process.pid || !serviceProcessOwns(state, { platform: effectivePlatform })) {
+    return;
+  }
   try {
-    return execFileSync("tasklist.exe", ["/FI", `PID eq ${pid}`, "/NH", "/FO", "CSV"], {
+    execFileSync("taskkill.exe", ["/PID", String(state.pid), "/T", "/F"], {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    })
-      .split(",")[0]
-      .replaceAll('"', "")
-      .trim()
-      .toLowerCase();
+      stdio: ["ignore", "ignore", "ignore"],
+      timeout: SERVICE_TREE_COMMAND_TIMEOUT_MS,
+      windowsHide: true,
+    });
   } catch {
-    return undefined;
+    // A process that already exited is the desired state. If taskkill failed
+    // for another reason, the bounded wait below leaves the record intact so a
+    // later stop can try the same verified identity again.
   }
-}
-
-// `schtasks /End` stops the task's own process, but the launcher starts the
-// router detached, so node outlives it and keeps the port. The task then reads
-// Ready while the router is still listening, the next /Run cannot bind, and it
-// drops straight back to Ready. Nothing reports an error, so an install can sit
-// unsupervised for as long as the orphan lives - which is why a stop has to be
-// confirmed against the port and not against the task state that proxies it.
-function reclaimRouterPort() {
-  const deadline = Date.now() + TASK_STOP_TIMEOUT_MS;
+  const deadline = Date.now() + SERVICE_TREE_STOP_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const pid = listeningPid(PORTS.router);
-    if (pid === undefined) return;
-    // Only ever terminate our own runtime. Anything else holding this port is a
-    // competing router or an unrelated process, which is doctor's "Router
-    // ownership" check to report rather than ours to kill.
-    if (imageName(pid) !== "node.exe") return;
-    try {
-      execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
-    } catch {
+    const alive = serviceProcessOwns(state, { platform: effectivePlatform });
+    const listening = managedPortStillListening(state);
+    if (!alive && !listening) {
+      clearServiceProcessState();
       return;
     }
-    sleep(TASK_STOP_POLL_MS);
+    sleep(SERVICE_TREE_STOP_POLL_MS);
+  }
+  if (
+    !serviceProcessOwns(state, { platform: effectivePlatform }) &&
+    !managedPortStillListening(state)
+  ) {
+    clearServiceProcessState();
   }
 }
 
 function endTask() {
   try {
     schtasks(["/End", "/TN", taskName], { quiet: true });
-    waitForTaskToStop();
   } catch {
-    // The task may not exist, or may not be running; either way there is no
-    // instance left to wait for. An orphan can outlive a task that is already
-    // gone, so the port is still reclaimed below.
+    // The task may not exist, or may not be running. An orphaned router root
+    // can still be recorded even in that case, so continue to the ownership
+    // cleanup rather than returning early.
   }
-  reclaimRouterPort();
+  waitForTaskToStop();
+  stopOwnedServiceTree();
 }
 
 // Only a task that still exists can be started. `Register-ScheduledTask -Force`
@@ -379,6 +428,7 @@ if (command === "render") {
   } catch {
     // The task may not exist.
   }
+  guardLauncherWrite();
   for (const target of [launcherPath, wrapperPath]) {
     try {
       if (existsSync(target)) unlinkSync(target);

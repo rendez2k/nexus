@@ -2,6 +2,1221 @@
 
 ## Unreleased
 
+- **Grok 4.6 can select Codex's native image viewer.** xAI stopped without a
+  function call when the tool was named `view_image`, even when selection was
+  required. The Grok OAuth boundary now presents that tool as `inspect_image`
+  and restores returned calls to `view_image`, without colliding with a real
+  client tool of the same alias name. This complements the existing
+  image-result transport fix: Grok can now both invoke the viewer and receive
+  its returned pixels.
+
+- **Grok OAuth keeps image-bearing tool results multimodal.** The
+  Chat Completions-to-Responses hop JSON-stringified every non-string tool
+  result, so Codex could complete `view_image` while Grok received JSON and
+  base64 text instead of pixels. Structured image output now remains
+  `input_image`, preserves detail and mixed-part order, and recovers common
+  image MIME types from generic octet-stream data URLs. Text-only and other
+  structured tool results keep their previous behavior.
+
+- **A Codex Stop hook continues grok-oauth mid-task stops once.** After a
+  tool result, a short status sentence with no follow-up tool call used to
+  hand control back. `hooks/codex-stop-grok-oauth.mjs` is a user-level Stop
+  hook: it blocks only when `model` is a `grok-oauth/*` slug, the transcript
+  shows a tool result then a short status, and `stop_hook_active` is false.
+  Native GPT slugs fall through with `{ continue: true }`. Cap is one
+  automatic continue. `CODEX_GROK_OAUTH_STOP_HOOK=0` disables it.
+
+- **The routed-model skill says a text-only turn ends the task.** Custom
+  models often emit a status sentence after a tool result and call nothing;
+  Codex then hands control back. The `codex-router` skill now states that
+  contract and tells the model to call the next tool in the same turn when
+  work remains. This is instruction, not a protocol fix — the Grok OAuth
+  after-tool retry still covers a model that ignores it.
+
+- **Grok OAuth no longer accepts uncertified prose after a tool result as a
+  successful completion.** The
+  progress-only retry used to classify only on visible-text length and
+  output tokens. After a successful tool, a cheap status sentence ("The
+  figures are ready.", 95 tokens) never retried, and a reasoning-heavy
+  one-liner was nudged with "if you are already done, stop" — so the model
+  restated the status and the turn looked finished. The last non-system
+  message being a tool result is now the signal, independent of language,
+  phrasing, or answer length: a no-tool turn is held and retried once. The
+  repair must call exactly one function: either a client tool or the router's
+  private final-answer tool. The private tool is converted back to ordinary
+  assistant text and never reaches Codex.
+  An empty, progress-only, or failed repair becomes an explicit 502 instead
+  of a clean `stop`, so Codex cannot record it as a silent success. A
+  one-line verdict after a user message still gets the no-tool branch
+  first, so a finished Q&A cannot be talked into a call the client would
+  run.
+
+- **Grok progress-repair usage separates context from billed spend.** Codex
+  now receives the selected repair attempt's prompt count instead of the sum
+  of both attempts, preventing a roughly 150k context from appearing as 300k.
+  The aggregate provider cost is retained separately as billed input/output
+  tokens in the local usage ledger.
+
+- **Grok and DeepSeek advertise Codex reasoning summaries.** The catalog now
+  opts the official Grok and DeepSeek thinking models into
+  `supports_reasoning_summaries`, so Codex can show their thinking while a
+  turn is in flight and collapse it afterwards — the same surface native GPT
+  uses. Grok OAuth was dropping xAI's `reasoning_summary_text` /
+  `reasoning_text` deltas on the Chat Completions hop; those now land as
+  `reasoning_content` so LiteLLM can put them back on the Responses reasoning
+  channel. DeepSeek already emitted `reasoning_content`; it only needed the
+  catalog flag. `deepseek-chat` stays off because it is the non-thinking
+  alias.
+
+- **Grok OAuth retries a progress-only stop once on the user-message path,
+  without holding the first byte.** Attempt 1 streams live. If the client offered tools and the turn
+  ends with short visible text, no tool calls, and enough output tokens to be
+  reasoning-heavy, the forwarder retries once with a trailing user nudge and
+  *appends* only the retry's tool-call deltas plus `finish_reason:
+  "tool_calls"` onto the same open stream. The first answer is kept when the
+  retry also has no tools. This paragraph describes turns following a user
+  message; post-tool turns use the stricter certified repair above. Both
+  attempts on this older path are summed into `usage` with
+  `progress_only_retried: true`; that marker is what `acceptedInputTokens`
+  excludes, not a bare transport `retries` count. The retry log is not gated
+  on `MODEL_ROUTER_QUIET`. Set `CODEX_ROUTER_GROK_PROGRESS_ONLY_RETRY=0` to
+  pay once and see the raw first attempt. `dispatchSseBlock` now catches only
+  `JSON.parse`.
+
+  The trigger is a shape and cannot be anything else: a finished task answered
+  in one line — "Yes, that is correct." after 1,500 reasoning tokens — is
+  indistinguishable from a turn that stopped early, so it is retried too. The
+  nudge therefore offers the no-tool branch first ("if that already completed
+  the task, restate the final answer and call no tool"), which routes the
+  finished case into keep-first. An imperative nudge makes such a turn invent
+  a tool call, and the forwarder would graft it onto the answer for the client
+  to run. A false positive now costs one round trip, not a wrong action.
+
+- **The Devin CLI probe no longer reports "unknown" for a Devin CLI that is
+  installed and working.** `devinCliVersion` was the one call site out of
+  twenty that took `command` and `args` from `spawnableCommand` and threw away
+  the third field. For a Windows `.cmd` shim — which is what npm installs —
+  that field carries `windowsVerbatimArguments`, and without it Node re-quotes
+  a command line that has already been escaped for cmd.exe. The version came
+  back empty and the probe printed `unknown`, which reads as "you do not have
+  the CLI" to the one person running a probe written specifically to stop that
+  misdiagnosis. The probe's own convention — every outside edge injectable — now
+  covers this edge too, so the options, the cmd.exe hop, and the POSIX
+  pass-through are all asserted on every platform rather than only on Windows.
+
+- **The Windows command-line escaping is now pinned against the hazards that
+  could not previously be caught off Windows.** `spawnableCommand` builds one
+  cmd.exe command line, and until now the only proof it was armed correctly was
+  an end-to-end test that runs a real shim and therefore skips everywhere else.
+  A pipe, a redirect, a `!`, and a trailing backslash before a closing quote —
+  the four that would end the quoted span or start a second command if the
+  escaping were wrong — are now asserted in rendered form on every platform,
+  and added to the set the Windows job runs for real. No behaviour changed: the
+  escaping already matched `cross-spawn` character for character.
+
+- **Running the test suite no longer resets your subagents.**
+  `test/state-owner.test.mjs` ran the real `src/catalog.mjs` against a scratch
+  state directory while inheriting the developer's own `CODEX_HOME`. No
+  state-directory override redirects `$CODEX_HOME/agents`, so the catalog read
+  an empty state — no proofs, no selection, no picker — and pruned the real
+  agents directory to the handful of models the shipped registry promotes on
+  its own, deleting the definition of every model this machine had promoted
+  through a local capability probe. The settings naming those models live in
+  the state directory and survived, so `subagents status` kept reporting them
+  as enabled while Codex had nothing left to spawn: subagents that appeared to
+  reset themselves after an unrelated command. The test now isolates the home
+  with the state, and a guard in the same file fails if any test spawns the
+  catalog without doing so. If your routed agents are already missing, one
+  catalog refresh from the owning checkout restores them.
+- **A forwarder that cannot bind its port now says so.** The four forwarders
+  the service starts — `kimi-oauth`, `api-forwarder`, `grok-oauth`, and
+  `devin-cli` — called `listen` with no `'error'` handler, so a port already in
+  use killed the process with Node's unhandled-`'error'` crash dump: `throw er`
+  and a libuv stack, in a log the four of them share, naming neither the
+  forwarder nor the port. Startup then reported only that *some* forwarder had
+  exited before becoming healthy. Each one now reports the bind failure the way
+  the router already did since #171 — one line naming itself, the address, and
+  the reason — and exits with the router's own listen-failure codes (98 for
+  `EADDRINUSE`, 97 for `EACCES`, 96 otherwise), so one line in the service log
+  classifies the death for a supervisor and a human alike.
+
+- **GPT-5.6 Sol can now run at the 1M context window OpenAI documents for it.**
+  The catalog Codex ships declares 272,000 tokens against a documented
+  1,050,000, and that figure has already moved twice
+  (openai/codex#31860, #32806). Editing `model_context_window` and
+  `model_auto_compact_token_limit` in `config.toml` answers this for a whole
+  machine; the picker now answers it per task. **GPT-5.6-Sol (1M context)**
+  (`gpt-5.6-sol-1m`) is the same upstream model published under a second slug
+  with a 1,000,000-token window and compaction starting at 900,000 —
+  instructions, reasoning ladder, image input, and subagent behavior are copied
+  from `gpt-5.6-sol`, and the router rewrites the slug back to its base before
+  the turn leaves, so OpenAI only ever sees the model it published. It ships
+  **switched off**, because a turn resends the whole conversation and a request
+  above 272,000 input tokens is billed at a higher rate in full: a model that
+  costs more than the one it shadows has to be chosen, not discovered after the
+  bill. Switch it on under OpenAI in the Settings model list, or with
+  `./bin/control picker set gpt-5.6-sol-1m show`. That answer is remembered —
+  later catalog rebuilds never re-apply the default to a model already decided,
+  in either direction — and a login-free install does not get the entry at all,
+  because its native slugs come from a server-supplied allowlist.
+
+- **Gemini CLI is a target.** It speaks only the Gemini API and Google ships no
+  bring-your-own-provider setting, so pointing it at this router used to be
+  impossible — the endpoint it wants does not exist anywhere in the codebase.
+  It does, however, read its endpoint, its credential, and its default model
+  from the environment, and `createContentGenerator` builds a plain
+  `@google/genai` client from them. So the router now serves
+  `/_codex-router/<key>/gemini/v1beta/models/{model}:{method}` and writes one
+  marker block into `~/.gemini/.env`. `./install.sh --target gemini` or
+  `./bin/model-router gemini enable` sets it up; the next `gemini` run has the
+  routed models, with nothing to restart.
+  The surface reaches no provider of its own. It translates the turn into a
+  Responses request and sends it through the router's existing `/v1/responses`
+  over the loopback, so tool-result ageing, the vision bridge, prompt-token
+  substitution, upstream retry, model failover, and usage accounting all still
+  sit on one request path rather than two that would drift. Tools, system
+  instructions, inline images, streaming deltas, reasoning summaries, tool calls
+  and their results, usage counts, and finish reasons all cross in both
+  directions. A stream the upstream drops still ends with a finish reason,
+  because the SDK waits for one before it considers a turn over.
+  `settings.json` is never opened for writing: it is JSONC carrying the user's
+  own comments, and this integration does not need it. The `.env` block is the
+  only thing written, it is 0600 because it holds the caller key, publishing
+  twice is byte-identical, and removing it restores the file exactly. A managed
+  key assigned outside the block stops the publish with the line named rather
+  than being silently overwritten — `dotenv` lets the last assignment win, so a
+  duplicate would quietly decide which endpoint is in force and nothing in the
+  file would say so.
+  The default model is written, unlike the harness integration's opt-in
+  equivalent, because Gemini CLI's own default is a Gemini model this router
+  does not route: an install that left it alone would 404 on the first turn.
+  `--model` still outranks it and `--no-default-model` omits it.
+  Embeddings are refused with a named 501 rather than faked, and `countTokens`
+  is estimated rather than answered by spending a real turn upstream.
+  None of this is documented by Google. The contract was read out of the
+  installed `@google/genai` and `@google/gemini-cli-core` bundles and then
+  proved by driving the real `gemini -p` at a real provider: a routed turn came
+  back through the CLI verbatim, and a tool-calling turn completed the whole
+  loop — ten tool schemas out, a tool call in, its result back out, and the
+  model's answer in. That live run is what caught the one bug the unit tests
+  could not: a Gemini tool declares its schema as `parametersJsonSchema`, not
+  `parameters`, so the first cut sent every tool upstream with no schema at all
+  and the CLI rejected each call the model made with "params must have required
+  property 'file_path'".
+- The rule for which models may be published to a client that carries no ChatGPT
+  session of its own now lives in `src/routed-client-models.mjs` instead of
+  inside the harness manager. It was always a general rule; a second client
+  wanting it verbatim is what made a second copy the wrong answer.
+- **A subagent that had been proven once could never be un-proven, however
+  badly it behaved afterwards.** The observer that settles a locally verified
+  subagent gated itself on `awaitingSpawnProof`, which is true only while a
+  slug sits in the experimental window — so the instant turn one promoted a
+  model, the router stopped watching it. A hard 400/422 on turn two was
+  discarded with everything else, and the only thing that could re-examine the
+  slug was a hand-run `control subagents verify` (#257). Two changes, both
+  about the gate rather than the thresholds. `proven` is now revocable: the
+  same structural rejection that would have blocked promotion takes it back
+  afterwards, without needing to repeat, because nothing makes a 400 weaker
+  after a 200 than before it and the transient statuses that prove nothing
+  (429, 5xx, disconnects) were already excluded. Registry-v2 models are
+  untouched — their claim is the shipped native collaboration proof, not one
+  machine's traffic — and re-promotion stays manual, since that is the
+  direction that spends quota. And a child that answers turn after turn
+  without converging is now demotable at all: it emits nothing but 200s, so no
+  status-shaped branch could ever see it, and the evidence instead is how much
+  of its own budget one spawn burns while still going. `src/subagent-turns.mjs`
+  accounts each spawn separately by `thread-id` and adds up the new input
+  tokens it produces — every child turn resends the whole conversation, so
+  growth in the prompt count is what the child newly made, and a compaction
+  makes the count fall so everything after it is work being done twice. The
+  ceiling is twice the larger of the model's declared `autoCompact` budget and
+  the largest prompt the spawn has actually had accepted: one budget is a large
+  but legitimate task, and it is compacting *again* without ever finishing that
+  names the runaway, which is the same pathology
+  `context-window-drift.mjs` and #266 already describe. No round number was
+  invented — `autoCompact` is per model and comes from the provider's own
+  published window, and a model that declares none is counted but never
+  condemned. Measuring against the spawn's own observed peak as well as the
+  declaration makes a false demotion impossible rather than merely unlikely: an
+  uncompacted spawn's total is exactly half its own ceiling however long its
+  task runs, so neither a model whose declared budget sits far below its window
+  nor a single oversized tool result can condemn anything. Only prompt counts
+  the provider actually reported move the total,
+  so substituted estimates and retry-doubled counts cannot manufacture a
+  demotion. Both paths log unconditionally and record the turn and token
+  counts in the proofs file, so `control subagents status` and the tray say
+  what happened rather than a picker entry quietly disappearing.
+- **A passing Devin CLI probe now means something.** The provider's Cascade
+  transport was transcribed from a shipped binary and has never met Cognition's
+  backend, so #270 asks a volunteer with an account to settle it. The probe that
+  ask points at printed one line per stage, and every one of those lines could
+  pass while the thing it was meant to prove had failed: an empty model list
+  read as `OK: account advertises 0 model(s)`, a stream that decoded to nothing
+  read as `OK: streamed 0 character(s)`, and a tool call that arrived under a
+  field number this build does not know was skipped in silence and reported as a
+  model that chose not to call a tool — the one failure that decides whether
+  Codex can drive the provider at all. The probe now audits the raw bytes
+  alongside the schema and prints a PASS/FAIL line per assumption with the
+  observed value on each failure, so a run that reports success has confirmed
+  each one separately: request encoding, model list decoding, envelope framing,
+  the compression flag, the end-of-stream terminator, stop reason, usage,
+  tool-call ids and arguments, and a replay of the captured bytes through the
+  client a routed turn actually runs. Where a tool call goes missing, three
+  distinct lines separate a renumbered field from a model that declined. The
+  live turn is now capped at 64 output tokens and 90 seconds, `--live` remains
+  the only flag that spends anything, a mistyped flag fails the run instead of
+  quietly downgrading it, and the output folds `$HOME` to `~` and carries no
+  token, because it is written to be pasted into a public issue.
+  `docs/DEVIN-CLI-PROBE.md` is the tester's copy of all of it.
+
+- **The Devin CLI transport now reports a refusal as a refusal.** Its Connect
+  client carried ten of the protocol's sixteen error codes, and the six it did
+  not — `canceled`, `already_exists`, `aborted`, `out_of_range`, `data_loss`,
+  and `unimplemented` — fell through to 502. Every layer above reads a 5xx as a
+  bad moment in the chain rather than an answer: the vision bridge retries it,
+  and Codex spends its own reconnects on it. `unimplemented` is what Cascade
+  answers when the service path or method name has drifted from the binary these
+  schemas were transcribed from, so the one code that can never succeed was the
+  one dressed as worth another try. The client now imports the full table from
+  `src/connect-stream-audit.mjs` instead of restating half of it, so
+  `unimplemented` arrives as 501, `already_exists` and `aborted` as 409,
+  `out_of_range` as 400, and `canceled` as 499 — none of them retryable — on
+  both the HTTP failure path and the end-of-stream terminator.
+- **A compressed Connect frame is no longer a silently empty answer.** Each
+  Connect envelope has a flags byte whose low bit marks the message compressed,
+  and the client ignored it: the frame went to the protobuf decoder, which is
+  not being handed protobuf, and the turn ended with no text and no tool calls
+  or with a wire-type error naming nothing anyone could act on. The client now
+  asks for `connect-accept-encoding: identity` on both call shapes and, if a
+  frame arrives compressed regardless, fails with a named
+  `devin_compressed_frame` (501) instead of guessing — including on the
+  end-of-stream terminator, where a compressed frame would otherwise have read
+  as the empty `{}` that means the turn succeeded. Decompression is deliberately
+  not implemented: no maintainer can reach Cascade to test it, and a compliant
+  server has no reason to compress once it has been told identity.
+
+- **Grok OAuth no longer loses late or custom tool calls.** The forwarder now
+  accepts `function_call` and `custom_tool_call` items that first appear in
+  `response.output_item.done`, restores final arguments when argument deltas
+  are absent, joins repeated SSE `data:` fields, and consumes the final event
+  even when the upstream omits its trailing blank line. Streaming remains live
+  while the upstream turn is running.
+
+- **Curated models were filed at 131072 tokens however big they actually
+  were, and the million-token ones compacted on every turn.** Curation stored
+  one conservative window for every model it added, so a model OpenRouter
+  advertises at 1,050,000 was told to auto-compact at 110,000 — eight times
+  below its real capacity. That is not a cosmetic understatement: when a
+  provider answers with `prompt_tokens: 0` the router substitutes an estimate
+  of the prompt it just sent, and that estimate errs high on purpose, so
+  against a threshold this low it landed above the compaction limit turn after
+  turn. The session summarized itself, lost its working state, redid the same
+  opening work, and summarized again without ever finishing (#266). The
+  provider's catalog already carries the answer, so discovery now reads it:
+  `context_length`, the figure the serving endpoint reports under
+  `top_provider`, `context_window`, or Copilot's
+  `capabilities.limits.max_context_window_tokens`, taking the smallest of the
+  ones present because those are limits at different scopes and only the
+  narrowest is the one the request path can rely on. Both curation forms store
+  it, and `autoCompact` follows from it; the interactive prompt offers it as
+  the default rather than making the user retype a number the provider already
+  published. A model the catalog sizes in silence still falls back to 131072,
+  and an entry curated earlier keeps what it was given — an additive run never
+  rewrites metadata a user may have tuned by hand, so repair it in
+  `user-models.json` or `--remove` and curate it again.
+
+- **The substituted prompt-token estimate charged the session for reasoning no
+  model ever reads.** When a provider answers with `prompt_tokens: 0` the
+  router substitutes an estimate of the prompt it just sent, dividing the
+  serialized request body by 3.3 bytes per token. That divisor is calibrated
+  against text a model reads, and the body is not: most of a Codex turn is
+  `encrypted_content`, the sealed chain of thought carried on every reasoning
+  item. The gateway's Responses-to-chat bridge drops reasoning items outright
+  and no routed provider can decrypt another vendor's token, so those bytes buy
+  zero prompt tokens — but they were counted, and there can be a lot of them.
+  The router already sheds some: a reasoning item that carries summary text and
+  sits immediately before the turn it belongs to is rewritten into assistant
+  text, ciphertext and all. An item with an empty summary, which is what a
+  provider returns when it has none to give, is forwarded whole. Measured
+  through the router itself on a twelve-turn tool loop: with summaries no
+  ciphertext reaches the gateway at all, and without them every blob does and
+  they are 64% of the body the router sends. Charging that 64% at 3.3 bytes per
+  token is where the field reports of 3.9x–4.7x come from, and an estimate that
+  high clears `autoCompact` on a window the session is nowhere near, so it
+  compacted on every turn the provider reported as zero (#266). The
+  estimate now discounts `encrypted_content` and counts everything else. The
+  subtraction is deliberately one-sided: an unrecognized field is still counted,
+  so a body shape nobody anticipated errs high rather than estimating near zero,
+  and JSON escaping, structural scaffolding, and base64 image data all stay on
+  the bill for the same reason. The clamp to the declared context window is
+  unchanged, but it now means something. It used to fire on conversations at a
+  quarter of the limit, and since `autoCompact` is 85% of the window a clamped
+  estimate compacts by construction. Counting only model-visible bytes puts a
+  floor under it: the estimate can only reach the window if the visible text
+  does, so a clamped estimate now means the conversation really is between 82.5%
+  and 100% of the limit, where compacting is the right answer.
+- **A subagent on a thinking model poisoned the conversation that spawned it.**
+  Every request after the child finished came back as a 400 reading "The
+  `reasoning_content` in the thinking mode must be passed back to the API",
+  seen on DeepSeek V4 Flash through the opencode Go subscription. LiteLLM's
+  Responses-to-chat translation drops `reasoning` input items outright, and the
+  carry that compensates for that only recognised a tool loop — reasoning
+  sitting immediately before a `function_call`. A subagent ends in prose, so
+  the reasoning behind its final answer was thrown away and the provider was
+  asked to continue a thinking turn it had never been shown. The carry now
+  covers every assistant turn: prose answers and custom tool calls as well as
+  function calls, and the whole run of reasoning items a turn emits rather than
+  only the last of them. It merges into the assistant message instead of
+  inserting a second one, because two assistant turns back to back are their
+  own rejection on the same providers. "Compact old tool results" was reported
+  alongside this and is not involved — the aging pass only ever rewrites the
+  `output` of a tool result, and now has a test proving the reasoning and
+  assistant turns around it come through by reference. A subagent is not
+  required to reach this: an ordinary follow-up after any thinking-mode answer
+  fails the same way on a build that predates the fix, and that plainest path
+  is pinned by its own test.
+- **A single bad upstream response could take the whole router down.** LiteLLM
+  1.96.0 raises out of its own request handler while mapping an upstream 429 —
+  opencode Zen's exhausted free tier is one reliable way to reach it — and the
+  gateway process ends with exit code 1. The service raced every child's exit,
+  so that one failed request also killed the router and all three forwarders,
+  and from then on every client got a bare `Connection error` naming nothing
+  (#261). The gateway is now supervised: it is restarted in place, with a
+  doubling backoff and at most five restarts inside ten minutes, while the
+  router keeps listening — so a crash costs one stalled request instead of the
+  session, and the next one is answered by a live gateway. Every crash, every
+  restart, and the decision to stop restarting are logged unconditionally, and
+  when the bound is exhausted the service exits exactly as before so the OS
+  supervisor performs a clean restart. Supervision starts only once the gateway
+  has been healthy: a gateway that never came up is still a startup failure, not
+  a retry loop. `/health` now names which local service is unreachable, so
+  doctor reports "serving but reports gateway unreachable" instead of "not
+  ready", and `CODEX_ROUTER_GATEWAY_RESTARTS=0` restores the old behaviour for
+  an investigation that wants the process to die where it died. The pinned
+  litellm version is unchanged: a router that survives its gateway is worth
+  having whichever version is installed.
+
+  Startup also stopped refusing a Windows batch launcher. Node has declined to
+  spawn a `.cmd`/`.bat` without a shell since CVE-2024-27980, so pointing
+  `MODEL_ROUTER_LITELLM_BIN` at a batch wrapper ended the service before it
+  spawned anything, with an `EINVAL` naming neither the file nor the reason.
+  The launcher now goes through the same `spawnableCommand` helper every other
+  external command in the repository uses. The shipped installer produces
+  `litellm.exe`, so a normal Windows install is unaffected.
+- **Command Code was unusable on every plan but one, which is not the plan most
+  of its customers buy.** The provider only ever spoke `/provider/v1`, and that
+  surface is an entitlement rather than a credential: a $1 Go account signs in,
+  mints a real key, runs the official CLI all day, and is still answered `403
+  upgrade_required` — "Your Go plan doesn't include API access". The router's
+  only response was a plan note explaining why nothing worked. The `command-code`
+  CLI itself does not use that surface; every turn it takes goes to
+  `/alpha/generate`, which is not plan-gated. The forwarder now answers the
+  entitlement refusal by moving the turn there, so Go, GOAT, Pro, and Max are
+  served with the same key, the same catalog, and no upgrade. Both protocols are
+  covered: the chat-completions catalog and the Messages variant that carries the
+  Claude models. The refusal is remembered against a fingerprint of the
+  credential — never the key — so it is bought once rather than once per turn,
+  re-probed when the key changes, and re-checked every six hours in case the plan
+  did. Only a real `upgrade_required` may move a turn; a timeout, a 500, or any
+  other 403 is relayed with the provider's own message, because reading one of
+  those as a refusal would quietly move a paying Provider-plan account onto its
+  coding-plan credits. The fallback happens before the first relayed byte, the
+  same boundary the upstream-retry and model-failover rules draw.
+
+  That route carries the CLI's own envelope, not an OpenAI or Anthropic body, so
+  both directions are translated: a schema-strict `config` block where every
+  field is required and `memory` is a string rather than an object, messages in
+  the Vercel AI SDK `ModelMessage` schema, snake_case `input_schema` tools, and a
+  newline-delimited JSON response — despite its `text/event-stream` content type
+  — whose blocks interleave and whose trailing `tool-call` event keys on
+  `toolCallId` where every incremental event keys on `id`. Command Code publishes
+  no reference for any of it; the shapes were derived from the shipped CLI bundle
+  (v1.14.1) and confirmed against the live gateway.
+
+  One measurement changed the design. An empty `system` field is not "no system
+  prompt" to that route — it is a cue to splice in the Command Code agent's own
+  preamble. The same one-line turn cost 92 prompt tokens with a system prompt and
+  7,637 without, spent telling the model it was a different product with
+  different tools. A turn carrying no system prompt of its own now gets a neutral
+  one instead of the agent's.
+
+- **The tray showed Command Code's spending windows but not what was left to
+  spend.** The billing route it already polls reports the credit pool beside the
+  5-hour and weekly caps, and a coding plan runs out of the first long before it
+  stops hitting the second. Plan, purchased, and free credits now surface as a
+  balance metric, and the plan's own low-credit threshold marks it unavailable.
+- **Retained tool results had no way to be seen and no way to be cleared.**
+  Tool-result compaction parks the exact original bytes of a result it rewrote
+  in `<state dir>/retained-tool-results`. That store is bounded and fails safe —
+  at its cap it stops accepting new results and eligible results pass through
+  uncompacted — but it has no eviction and no TTL, so the only way to empty it
+  was `rm -rf`, and the first time most operators would learn it existed was
+  while hunting disk usage. It also matters more than its byte count: tool
+  results carry file contents, command output, and API responses, and this is
+  the one place the router keeps model-visible *content* on disk rather than the
+  counts and bytes its telemetry is limited to.
+
+  `./bin/doctor` now reports the store on every run — file count, total size,
+  and the age of the oldest entry — and reports it whether or not the directory
+  exists, because "nothing retained" is the answer most installs should see and
+  seeing it is what makes the directory discoverable at all. A store parked at
+  its cap is reported as a warning rather than as healthy, since that state is
+  permanent until somebody empties it.
+
+  `./bin/control tool-result-aging purge` empties it. It is a report by default:
+  without `--yes` it prints what it would remove and removes nothing, and
+  `--dry-run` says the same thing explicitly and outranks `--yes` so a wrapper
+  that always consents can still preview. Deletion is confined to the store by
+  construction rather than by intent — only names retention itself produces,
+  only entries whose parent resolves to that one directory, no recursion, and no
+  symlink is followed or removed. Anything else that ends up in there is left in
+  place and named. The directory itself is kept: emptying it is the whole job,
+  and removing it under a concurrent write buys nothing.
+
+- **Devin's models are reachable from the session its CLI already stored, and
+  this adds the provider that reaches them — untested against a real account.**
+  `devin auth login` writes a persistent token to `credentials.toml`, so
+  `devin-cli` reuses it exactly as `kimi-oauth` and `grok-oauth` reuse theirs.
+  The transport is the part with no precedent here: Cognition publishes a
+  session API, not a chat API, and the models answer only on Cascade —
+  `exa.api_server_pb.ApiServerService` over Connect RPC — so this ships a small
+  protobuf wire codec, the message subset transcribed from the descriptor set
+  embedded in the shipped `devin` binary, a Connect streaming client, and a
+  forwarder translating OpenAI Chat Completions into a `GetChatMessage` turn
+  and its deltas back. Reasoning and tool calls are mapped; images ride only on
+  the current turn, because replaying an older one fails the whole request.
+  Thirty-seven tests cover the codec against hand-computed bytes, the request
+  mapping, the credential reader, and envelope framing including a split frame
+  and an error carried in the end-of-stream terminator. None of that proves
+  Cascade accepts the request: no maintainer holds a Devin account, so the
+  provider ships catalog-only with no checked-in models and is documented as
+  unverified. `bin/devin-probe` is the way to find out — it checks the
+  credential and lists the account's models for free, and `--live --tools`
+  spends one turn to prove a streamed answer and a forced tool call.
+
+  Nobody who has not asked for Devin pays anything for it being here. The
+  forwarder is spawned only when the registry actually holds a `devin-cli`
+  model, so an install that never ran `bin/curate-models devin-cli` starts no
+  fourth child, binds no fourth port, and waits on no fourth health probe —
+  startup is byte-for-byte the work it was before. The gate is the curated
+  model rather than the stored credential on purpose: a curated model is
+  precisely what puts a `DEVIN_CLI_FORWARD_BASE_URL` route in the generated
+  gateway config, and the route and the listener are decided from the same
+  model list on the same boot, so a live route can never point at a port
+  nothing is listening on. Gating on `credentials.toml` would have been the
+  wrong trade — someone who curated a model but has not run `devin auth login`
+  gets a 401 naming that command, which a missing forwarder would have turned
+  into a bare connection error. When Devin *is* routed, everything is as
+  before: the forwarder is health-waited alongside the other three, an
+  unbindable port still aborts startup naming the forwarder, and a forwarder
+  that dies still ends the service so the OS supervisor rebuilds it.
+- **A retained tool result kept forever was an archive nobody chose.** The store
+  had a cap but no lifetime, so bytes retained today were still on disk a year
+  from now, and a store that reached 512 files or 512 MiB stopped retaining
+  anything new permanently — until somebody noticed and emptied it by hand.
+  Retained originals now expire after **7 days**.
+
+  The number is derived rather than round. Nothing ever reads those bytes back
+  into a turn: the receipt tells the model to repeat the tool call, so a
+  retained original's only reader is the operator, forensically, and only while
+  the session that produced it still matters. The caps say the same thing about
+  intent — 512 files and 512 MiB against a 32 KiB compaction floor is a working
+  set of a few long sessions, not a history. And a week is already this
+  repository's horizon for "recent enough to still act on", in the catalog's
+  announce window and the vision host's size cache alike.
+
+  Nothing sweeps on a timer and nothing is added to startup. Entries expire when
+  the store is next written to — the way the cooldown store is trimmed on its
+  next write, and the way a provider cooldown reads as gone long before anything
+  deletes it. `./bin/doctor` therefore reports what has already aged out rather
+  than what has been removed, and `./bin/control tool-result-aging purge
+  --expired` runs that sweep by hand for an install where compaction is off and
+  nothing is going to write again. It carries the same `--yes` consent, the same
+  `--dry-run`, and the same containment as a full purge, and it never removes
+  the key that binds the store's names to the install — expiring that would
+  orphan the entries the TTL just decided to keep.
+
+  `./bin/control tool-result-aging ttl <days|off|default>` sets the lifetime.
+  `off` is a real answer, kept verbatim: an operator who wants the archive keeps
+  it, and no later default overwrites that. A state file written before the TTL
+  existed never answered the question, so it reads as the default rather than as
+  "keep them forever". The `CODEX_ROUTER_TOOL_RESULT_AGING=0` kill switch does
+  not disable expiry — it stops the router rewriting request context, and expiry
+  is disk hygiene for bytes that are already written.
+
+- **Every turn against a Meta model failed on the web search tool.** Meta's
+  Responses surface answered each one with a 400 reading
+  "`tools[].search_content_types` is only supported for web_search_preview
+  tools", so Muse Spark 1.1, 1.2, and 1.2 Contributor were unusable rather than
+  degraded — the tool is declared on the turn whenever web search is enabled,
+  so this had nothing to do with whether the model actually searched. Codex
+  sends the current spelling of
+  that tool (`type: "web_search"`, carrying `search_content_types` beside
+  `external_web_access`, `filters`, and `user_location`); Meta validates it
+  against the legacy `web_search_preview` schema, which is the one place it
+  accepts the field. The forwarder now drops `search_content_types` from a Meta
+  request, and nothing else: the search tool itself still reaches the model with
+  the rest of its settings, and a caller that sends Meta a real
+  `web_search_preview` tool keeps the field on it. Scoped to Meta on purpose —
+  OpenAI documents `search_content_types` on `web_search` and not on
+  `web_search_preview`, the reverse of what this endpoint enforces, so the other
+  Responses-native providers keep a parameter the current spec grants them.
+  (#286)
+
+- **The free Qwen3.8 endpoint refused any conversation whose system message
+  arrived late or twice.** Its chat template answers those with a 400 reading
+  "System message must be at the beginning", and a real Codex session reaches
+  that shape routinely — a second system message, or one appended after the
+  conversation is already under way. Probing the live endpoint pinned the rule
+  to at most one `system` message sitting ahead of the first user, assistant, or
+  tool turn; the `developer` role is outside it entirely, so
+  `[developer, system, user]` is accepted and "the beginning" means before the
+  first turn rather than index 0. The request profile now coalesces the system
+  messages into one and places it ahead of the first turn, handling both plain
+  string content and content-parts arrays, and leaves developer messages exactly
+  where they are. A conversation the rule already allows is forwarded unchanged.
+  Hoisting is a compatibility repair with a real cost — instructions the caller
+  placed mid-conversation are read as opening context instead — accepted only
+  because the alternative from this endpoint is no answer at all.
+
+- **Every compaction against the free Qwen3.8 endpoint failed on an empty tool
+  list.** Compaction disables tool use by sending `tools: []`, which every other
+  forwarder reads as "no tools" — this endpoint's vLLM build answers it with a
+  400 saying the array must not be empty and the field should be omitted
+  instead, and answers the tool choice sent alongside it with a second 400
+  saying `tools` must be set. The model carries a 262K window that auto-compacts
+  at 230K, so the failure was not an edge case: it was every long session. The
+  request profile now omits an empty list and then drops the tool choice that
+  strip leaves with nothing to choose from. The repair sits at the last hop
+  before this one endpoint, because an empty tool list stays the correct way to
+  disable tools everywhere else, and a real tool list still forwards untouched.
+
+  The entry is also renamed to **Qwen3.8-27-free-victor**, crediting `victor`,
+  who publishes the endpoint, in the name the picker shows rather than only in
+  the endpoint note.
+- **A turn whose provider has run out of usage now continues on another model.**
+  An install with thirty providers configured runs out of one of them most days:
+  a coding-plan window closes, a weekly quota lands, a balance empties. The
+  router named that failure clearly and then stopped — Codex has nothing to do
+  with a billing error, so a session mid-task simply ended, subagents included,
+  while every other model the operator could reach sat unused. The turn is now
+  rebuilt for the next eligible model and sent again, and the client sees one
+  clean answer.
+
+  What qualifies is deliberately narrow: an exhausted balance or plan limit, a
+  402, or a 429 whose `Retry-After` is longer than a minute. A rejected
+  credential, an unknown model, a malformed request, and every 5xx keep exactly
+  the error they returned before — swapping models to dodge a bad key would hide
+  the one fact that fixes it, and a short rate limit is cheaper to wait out than
+  a cold prompt cache is to pay for. Free models are tried before paid ones,
+  then the rest in the registry's own preference order; a model on your own
+  machine is never chosen automatically, because the runtime might not be
+  running. A candidate whose context window cannot hold the conversation is
+  skipped, so a quota failure is never traded for a context-window rejection.
+
+  When a provider says when it will be back, that window is believed: the next
+  turn skips it outright instead of buying the same rejection again, and it is
+  used again by itself once the window passes or the next time it answers. A
+  reset time is never invented, only ever read from the provider, and it is
+  capped at six hours so a malformed one cannot strand a model.
+
+  Nothing about the swap is silent, and nothing is injected into the transcript.
+  The router logs it (never gated on `CODEX_ROUTER_QUIET`), the tray Island names
+  the model actually answering, and the usage event carries `failoverFrom` so a
+  rescued turn stays distinguishable from one that never failed. Compaction gets
+  the same treatment, because a compaction that fails ends a session just as
+  hard. `./bin/control failover status|on|off|chain <slugs>|auto|reset`; the
+  doctor reports any provider currently being held off and when it clears.
+
+- **The GLM-5.3 1M entry routed to a model code Z.ai does not serve.** Shipping
+  `glm-5.3[1m]` took the vendor's documented 1M suffix at its word, and the
+  suffix answers `1214` on both the OpenAI-compatible and Anthropic endpoints --
+  every request through that entry failed, while plain `glm-5.3` on the same
+  endpoint and credential succeeded. The entry is gone rather than repaired,
+  because there is nothing behind it to repair. The window it was invented to
+  reach turned out to be served on the plain entry all along: a 990,020-token
+  prompt was accepted, so `zai-coding/glm-5.3` declares 1M and its picker
+  description says so instead of directing readers to an entry that no longer
+  exists. A `config.toml` still naming the removed slug has nothing to route to
+  and fails at the native target; reselect the plain GLM-5.3 entry.
+
+- **A `custom` provider whose models each name their own endpoint.** Every other
+  provider owns one address, which is why "route this one model from that one
+  host" has always meant inventing a whole provider for it. `custom` owns none:
+  each of its models carries its own `baseUrl`, its own auth, and its own
+  metadata, so one picker entry can hold a free community endpoint, a
+  self-hosted server, and a paid API with a key, at once. Enabling it asks for
+  nothing and it is never in the default set, because what it holds is whatever
+  somebody put in it.
+
+  Its first model is the free community Hugging Face Inference Endpoint for
+  `Qwen/Qwen3.8-27B`: no API key, 262K context, image input, tool calling, and a
+  thinking budget the effort picker dials. Every capability was measured against
+  the live endpoint rather than read off its model card — including the one
+  divergence, that its vLLM build validates `reasoning_effort` against a literal
+  set omitting the Codex ladder's `ultra`, so the request profile folds exactly
+  that rung onto `max` and leaves every other tier alone. It is shared, rate
+  limited per IP, and its owner says it will be retired once launch interest
+  fades: a model to try, not one to depend on.
+
+  The security rule follows the address down rather than staying at the provider.
+  A `custom` endpoint reached with no credential must have that address
+  allowlisted in code, exactly as an anonymous provider's is — otherwise adding a
+  JSON file under `config/custom/` would be enough to send prompts to any host on
+  the internet with nothing to authenticate them. A keyless endpoint stays
+  loopback-only, neither may declare an environment override that would walk
+  around those two rules, and an endpoint's identity is derived from its model so
+  one model's credential file can never be pointed at another model's secret.
+
+- **The GLM-5.3 1M entry routed to a model code Z.ai does not serve.** Shipping
+  `glm-5.3[1m]` took the vendor's documented 1M suffix at its word, and the
+  suffix answers `1214` on both the OpenAI-compatible and Anthropic endpoints --
+  every request through that entry failed, while plain `glm-5.3` on the same
+  endpoint and credential succeeded. The entry is gone rather than repaired,
+  because there is nothing behind it to repair. The window it was invented to
+  reach turned out to be served on the plain entry all along: a 990,020-token
+  prompt was accepted, so `zai-coding/glm-5.3` declares 1M and its picker
+  description says so instead of directing readers to an entry that no longer
+  exists. A `config.toml` still naming the removed slug has nothing to route to
+  and fails at the native target; reselect the plain GLM-5.3 entry.
+
+- **A free Qwen3.8-27B provider that needs no account.** `qwen38-free` routes
+  the community Hugging Face Inference Endpoint for `Qwen/Qwen3.8-27B`: no API
+  key, 262K context, image input, tool calling, and a thinking budget the
+  effort picker dials. It joins `opencode-free` and `kilo-free` as an anonymous
+  provider, so it is never selected on anyone's behalf and never defaulted --
+  `./bin/model-router codex providers enable qwen38-free` is the whole setup.
+  Unlike those two it is not catalog-only: a single-model endpoint has no
+  naming rule to filter by, so its one documented free ID lives in code beside
+  the endpoint allowlist and the model ships with metadata verified against the
+  live endpoint rather than guessed by `curate-models`. The endpoint validates
+  `reasoning_effort` against a literal set that omits the Codex ladder's
+  `ultra`, so its request profile folds exactly that rung onto `max` and leaves
+  every other tier -- and forced tool choices, which it answers correctly --
+  alone. It is shared, rate limited per IP, and its owner says it will be
+  retired once launch interest fades: a model to try, not one to depend on.
+
+- **The panel's local-model view surfaces LM Studio.** LM Studio arrived as a
+  provider with exactly one door: `./bin/curate-models lmstudio` in an
+  interactive terminal, while the panel's Local LLMs section read only
+  `ollama list` -- so models loaded in LM Studio were invisible there and
+  uncountable in its summary. The snapshot now carries an LM Studio section
+  read from the server's own `/v1/models` endpoint, the panel lists what it
+  serves with checkboxes, and checking one publishes it through the same
+  user-model overlay the terminal writes, so neither door can strand the
+  other's entries. A stopped server reads "not running" instead of the section
+  vanishing, and a curated model the server no longer serves stays visible as
+  such rather than lingering in the picker with no way to see why.
+
+## 0.4.0-beta.4
+
+- **A command that opens the browser panel.** The panel shipped with no way to
+  reach it: its URL carries the caller capability, and nothing printed one, so
+  "nothing to install" still meant "and no way in". `codex-router.ps1 panel`
+  (`bin/panel`) opens it in the default browser. It reports the router being
+  down instead of opening a page that would load empty, and prints the address
+  redacted, because AGENTS.md treats the capability path as local
+  authentication; `--print` is the deliberate exception and says what it is
+  handing over.
+
+- **Caller-key redaction covered only `/v1`.** `redactCallerUrl` is what keeps
+  the capability out of support bundles, doctor output, and error messages, and
+  it matched the API path alone -- so a panel URL, the identical secret in the
+  identical position, travelled through every one of those surfaces verbatim.
+  It now covers each leaf the capability guards.
+
+- **The companion no longer requires a Rust toolchain.** Building it meant
+  installing cargo, the heaviest prerequisite in the project, asked of someone
+  who only wanted to see the panel; without it the install step failed and the
+  machine ended up with no companion at all. `tray install` now falls back to
+  the Electron shell, which needs only the Node the router install already
+  required, and `codex-router.ps1 companion` selects it explicitly.
+  `scripts/build-electron-companion.ps1` and its shell counterpart verify the
+  runtime is actually present: npm 11 blocks install scripts by default and
+  electron downloads its runtime from one, so `npm ci` exits 0 having fetched
+  the package but not the binary, and the failure surfaces much later as an app
+  that never starts.
+
+- **Every single-argument Windows subcommand was unreachable.** PowerShell
+  enumerates a statement's output into an assignment, so
+  `$Arguments = if (...) { @(...) }` collapsed a one-element array to the
+  element itself; `$Arguments[0]` then indexed a String and returned its first
+  character. `codex-router.ps1 tray status` died on "Unknown tray action 's'",
+  as did start, stop, restart, and uninstall. The existing tests asserted the
+  script's text rather than running it, so none of them saw it.
+
+- **`bin/` scripts were not pinned to LF.** They are the same POSIX shell
+  scripts as `install.sh` without the extension, so `.gitattributes`' `*.sh`
+  rule never reached them and a Windows checkout with `core.autocrlf=true`
+  rewrote all 27 to CRLF, which `sh` fails on. The blobs were already LF, which
+  is why POSIX installs kept working and the damage stayed invisible.
+
+- **The companion opens in a browser, with nothing to install.** The router is
+  already an HTTP server on loopback with a capability-gated path, and the UI
+  is plain HTML whose entire backend surface is one function, so it now serves
+  itself at `/panel` behind the same caller capability every other local
+  endpoint uses. No binary, no toolchain, no packaging, no tray icon to find.
+  The panel deliberately carries only the reading half of the command table:
+  a browser tab is reachable by anything that learns the capability, and
+  "save this API key" is not something to expose on that assumption.
+
+- **An Electron shell, packaged.** `apps/electron` builds an installer through
+  electron-builder (NSIS and zip on Windows, AppImage on Linux). It is a shell
+  rather than a second application: `apps/desktop/ui` is loaded verbatim and
+  every command runs through the same table, so all three surfaces -- tray,
+  Electron, browser panel -- are windows onto one application. The command
+  table moved to `src/desktop-commands.mjs` for exactly that reason.
+
+- **The desktop companion is a download now, not a build.** It could be
+  obtained exactly one way -- install a Rust toolchain and compile it -- which
+  is a hard prerequisite for anyone who only wants to run it. CI was already
+  building the Windows and Linux binaries on every run and discarding them, and
+  releases shipped source archives only. Releases now attach
+  `codex-router-tray-<version>-windows-x64.exe` and the Linux binary,
+  checksummed in `SHA256SUMS` and covered by the same provenance attestation as
+  every other asset; CI publishes the same binaries as artifacts so unreleased
+  changes can be tried without a toolchain. Windows already ships the WebView2
+  runtime the companion needs, so a downloaded binary just runs.
+
+- **The Windows tray is managed the way the macOS one is.** Installing it was
+  possible but nothing else was: `bin/model-router-tray` answered Windows with
+  "use scripts/build-desktop-tray.ps1" and `codex-router.ps1` had no `tray`
+  verb at all, so where macOS and Linux each have one command that builds the
+  companion and hands it to a supervisor, Windows had two incantations and no
+  way to check, restart, or remove it. `./codex-router.ps1 tray
+  [install|status|start|stop|restart|uninstall]` is that command. Install
+  rebuilds only when the sources moved and stamps the build, so an update no
+  longer rebuilds a current companion from scratch — Windows was missing from
+  the rebuild gating entirely, which meant the one platform whose tray must be
+  built deliberately was also the one that never recorded having been built.
+  Guided setup now runs the same command instead of repeating its steps.
+
+- **`control apply` stopped carrying its own Windows installer invocation.** It
+  reuses the checkout-installer helper that `update` already uses and that is
+  unit tested, rather than a second hand-written PowerShell argument list that
+  nothing covered — the follow-up asked for in the review of #186.
+- **A credential-free install mode for lifecycle validation.** (#224)
+  `install.sh --no-provider --no-discovery` (PowerShell: `-NoProvider
+  -NoDiscovery`) installs the router idle: an explicit empty provider
+  selection, no credential prompts, and a persisted discovery kill-switch
+  honored by every credential reader — provider key files, the macOS
+  Keychain, other CLIs' OAuth and session files, Codex's `auth.json`, and the
+  `codex login status` probe all stay untouched. Codex traffic gets a local
+  `503 router_idle_no_provider` instead of provider or native forwarding, the
+  doctor reports the idle state at warn and exits 0, and a new `stop`
+  subcommand completes the install → start → status → doctor → stop →
+  uninstall loop. Re-running setup without the flags leaves idle mode. As
+  part of this, an explicitly empty provider selection now passes
+  `ensure-configured` as idle, which also un-breaks `bin/update` for anyone
+  who had hidden their last provider by hand.
+- **Uninstalling the last client integration now removes the background
+  service.** Whether Codex still counted as installed was keyed on the cached
+  native catalog, a file uninstall deliberately retains — so the service, its
+  LaunchAgent, and its listening ports survived every codex uninstall. The
+  installed-state witness is now the managed block in `config.toml`, which
+  enable writes and disable removes; `bin/disable` of the last client retires
+  the service too, matching what the Windows wrapper always did, and
+  `bin/enable` reinstalls it on the way back.
+
+- **Switching a model on as a subagent now researches it instead of ignoring
+  it.** Only six registry-proven models could ever be spawned as native v2
+  children; everything else the operator enabled was a silent no-show, and
+  promoting one more meant a repository change per model per provider. Now the
+  toggle is the assignment: enabling a model hands it to a detached capability
+  probe (two live requests proving streaming and a forced tool call through
+  the installed router), a passing model is advertised to Codex as an
+  experimental subagent, and the first real child turn settles the verdict —
+  the router watches its own request path for `x-openai-subagent` turns, and a
+  clean completion records a durable machine-local proof while a structural
+  rejection demotes the model back to v1 with the reason kept in the subagent
+  snapshot. Evidence lives in the protected `multi-agent-proofs.json`; local
+  settings still cannot manufacture a v2 claim, hidden or switched-off models
+  stay v1 whatever evidence they carry, and `control subagents verify` re-runs
+  the research explicitly.
+
+- **A reasoning model no longer answers into thirty seconds of silence.** The
+  empty-completion guard buffered every routed streaming response until it saw
+  content, and reasoning deltas deliberately did not count as content. On a
+  reasoning model the gap between the first reasoning delta and the first output
+  token is seconds to minutes, so the guard held that entire gap and the caller
+  saw nothing until the turn closed or the hold budget expired. Measured against
+  `opencode-go/deepseek-v4-pro` with only this behaviour varying, the client's
+  first byte moved from 30,638 ms to 517 ms; `deepseek-v4-flash` moved from
+  29,409 ms to 536 ms. Both held runs parked at the 30-second budget, which is
+  to say the budget decided when the caller saw anything, not the model.
+
+  Throughput was never affected, which is why this read as a frozen turn rather
+  than a slow one — and why no metric caught it. `responseStartMs` stops at
+  the response headers and `firstTokenMs` fires on reasoning deltas, and the
+  guard kept holding past both.
+
+  The hold exists only to make the retry invisible, and the recorded meter
+  prices it: across 19,043 routed turns it fired 168 retries, of which 17
+  succeeded. Every reasoning turn paid up to thirty seconds of dead air for a
+  silent rescue on roughly one routed turn in a thousand. So reasoning now ends
+  the hold without settling the verdict — the stream is relayed and the guard
+  keeps watching from behind it, and a turn that reasons and then produces
+  nothing is still classified empty. A silent upstream has no prologue worth
+  waiting for, so that case still holds every byte and still retries silently.
+
+- **An empty turn that already reached the client is stated, not swallowed.**
+  Once the prologue is on the wire the router cannot substitute a retry for it,
+  so it writes an `error` event into the open stream instead of grafting a
+  second response onto one the client is already reading. Codex treats that as
+  retryable and reissues the turn on its own ladder, which recovers more than
+  the single silent retry it replaces — verified against `codex-cli` 0.145.0
+  with a stub upstream: a reasoning turn ending in an empty completion produced
+  one request, no answer and no error, while the same turn ending in an `error`
+  event produced two requests and an answer. Turns that end this way are
+  metered as `emptyCompletionUnrepairable`, apart from the retried ones, because
+  one is a failure the router absorbed and the other is one the user sees.
+
+- **Finished subagents close without a click, even when the parent ignores the
+  usage hint.** Codex 0.147 still maps a child's `FINAL_ANSWER` to Working for
+  the live parent turn, and long San Francisco multi-agent parents often never
+  call `interrupt_agent` despite the managed `root_agent_usage_hint_text`. The
+  router now scans the request input for unfinished `FINAL_ANSWER` children and
+  injects the missing `collaboration.interrupt_agent` calls into the parent
+  response (stream and non-stream) before `response.completed`. This runs on
+  both routed external models and native OpenAI multi-agent parents (the SF
+  build path). Model-authored interrupts are left alone; only missing closes
+  are added.
+
+- **Finished subagents no longer stay Working just because the parent turn is
+  still live.** Codex 0.147 records a child's `FINAL_ANSWER` as
+  `subAgentActivity` `interacted` and maps that to Working until the parent
+  turn ends, the user clicks into the child, or the parent calls
+  `interrupt_agent`. `close_agent` is not in that v2 toolset. The managed
+  `multi_agent_v2` block now ships a root usage hint that tells the parent to
+  interrupt finished children, so new tasks settle the badge without a click.
+
+- **GLM-5.3, on every route that actually serves it.** Z.ai shipped GLM-5.3 on
+  2026-08-14. It is now in the picker three ways: `zai-coding/glm-5.3` on the
+  GLM Coding Plan subscription, `zai-api/glm-5.3` on the metered platform, and
+  `opencode-go/glm-5.3` on the opencode Go subscription, whose catalog already
+  advertises it (`./bin/discover-models opencode-go`). Command Code, Qwen Plan,
+  Ollama Cloud, and ClinePass do not carry it yet, so nothing was added there.
+
+  Z.ai documents the 1M context window for GLM-5.3 only behind the `[1m]` model
+  suffix, so that is a separate entry — `zai-coding/glm-5.3-1m`, which sends
+  `glm-5.3[1m]` and a one-million-token compaction window. The suffix-free
+  entries stay at the 200K lineage default rather than inheriting GLM-5.2's 1M,
+  because under-declaring a context window compacts early and over-declaring
+  overruns the turn.
+
+- **A Z.ai key now means one of two different things, and the router keeps them
+  apart.** `zai-api` is a new provider for the metered open platform on
+  `https://api.z.ai/api/paas/v4`, carrying GLM-5.3, GLM-5.2 (1M context), and
+  the cheaper GLM-4.7. It ships GLM-5.3 and GLM-5.2 with the same reasoning
+  ladders as the plan route, and GLM-4.7 with none, because Z.ai documents no
+  effort control for it.
+
+  It is a separate credential end to end: its own key file
+  (`zai-api-key.secret`), its own keychain service, and its own environment
+  variable (`ZAI_PLATFORM_API_KEY`) — never the plan's `ZAI_API_KEY`. A Coding
+  Plan key is not billable on the metered endpoint and vice versa, so a
+  `planNote` says so wherever a key is connected, and the account panel links
+  the billing page instead of polling the plan quota route with a key that has
+  no plan behind it.
+
+- **GLM reasoning effort follows the model, not the vendor.** The `glm-thinking`
+  request profile mapped every multi-tier GLM onto GLM-5.2's two rungs
+  (high/max), which would have silently rounded GLM-5.3's new `low` tier up to
+  `high` and billed deeper thinking than was asked for. The requested effort is
+  now clamped onto the ladder each model's own registry entry declares.
+
+- **DeepSeek Harness can use the Codex models you are already signed in to.**
+  Native GPT traffic is authorized by the caller's own ChatGPT session — the
+  router copies `authorization` and `chatgpt-account-id` off each request, Codex
+  attaches both, and a harness turn attaches neither. So the eight native models
+  were withheld from the harness: advertising them would have offered a turn
+  that could not authenticate.
+
+  The router now falls back to the session this machine is already signed in
+  with. You are logged in to Codex here; a client running as the same user on
+  the same machine should not have to log in again. The eight `gpt-5.6-*` and
+  `gpt-5.x` models publish to the harness whenever that session is usable, and
+  are withheld the moment it is not, so the picker never offers a model that
+  would 401.
+
+  It is a fallback and never an override: the injection happens only for a
+  request that carried no credential of its own, so a Codex turn is unchanged —
+  verified by relaying a deliberately invalid token and getting that token's own
+  401 back instead of a success. The credential is never logged, never returned
+  by a status call, and never put in an error message.
+
+  The session is checked for life, not just presence. That access token lasts
+  about ten days and Codex renews it only when Codex is used, so a harness-only
+  stretch longer than that would have left the router sending a dead token. An
+  expired session is declined two minutes early, native models stop being
+  published while it is dead, and `doctor` gains a line saying to open Codex
+  once — which is the fix, and which nothing else would have told anybody.
+  Renewal is left to Codex: reproducing that OAuth exchange would mean guessing
+  an unpublished client identity and risking the very login this was asked not
+  to disturb.
+
+  Worth knowing before leaving it on: it widens what the caller key reaches,
+  from the API-key providers to the ChatGPT subscription as well.
+  `CODEX_ROUTER_NATIVE_SESSION_FALLBACK=0` turns it off, and the harness drops
+  back to routed models only.
+
+- **The tray can install DeepSeek Harness, not just publish into one.**
+  `--target dsh` wrote routed models into a harness the user had already
+  installed themselves; on a machine without one, the missing step was an
+  `npm install -g` mentioned in passing in the docs. A Settings row now installs
+  `@deepseek-ai/dsh` and publishes in one click, and `control harness
+  status|setup` does the same from a terminal.
+
+  Global rather than the `npx @deepseek-ai/dsh web` the harness's README
+  documents: npx refetches on every run, leaves no `dsh` to type again, and is
+  invisible to the presence rule that keeps the router up for clients it cannot
+  watch. Node is checked against the harness's floor before npm is reached,
+  since the package declares no `engines` and a stale runtime otherwise fails at
+  first boot with a syntax error from inside `node_modules`. Install and publish
+  are ordered but not transactional — a failed publish leaves an installed
+  harness, which is where a retry wants to start, and republishing is
+  byte-identical. The npm mechanics move to `src/npm-global-install.mjs`, shared
+  with the provider-CLI installs rather than copied.
+
+  It is never a side effect: no `apply`, `enable`, or repair path installs the
+  harness. The model count the button reports is the routable set, not the
+  picker — native GPT models come and go with the Codex session described
+  above.
+
+  The row then runs the harness's browser UI: **Install**, then **Connect**,
+  then a play button, then **Open site**, each shown only in the state it
+  applies to. Publishing models and leaving somebody to remember a command and a
+  port was the step this action existed to remove, so the play button starts the
+  UI and the row reports the URL it is serving. Setup itself deliberately does
+  not start anything — it already installs a package and writes another
+  program's configuration, and a republish should not put a browser window on
+  screen nobody asked for.
+
+  A running server this router did not start is adopted rather than collided
+  with — the harness binds a fixed port, so a second launch exits with
+  `EADDRINUSE` — and only a process this router started is ever signalled,
+  matched on PID *and* process start identity because PIDs are reused.
+
+  It can also be turned off again, which it could not safely be before.
+  `bin/model-router dsh disable` ran `service.mjs uninstall` unconditionally, so
+  switching the harness off removed the LaunchAgent and stopped Codex working
+  too — the service is one shared plane, and one client leaving is not a reason
+  to retire it. `bin/disable` now removes it only once no client integration
+  remains, and the tray's **Turn off** goes through `control harness disconnect`,
+  which stops a UI this router started, removes the route, and touches nothing
+  else: the CLI, the harness's own settings, its other providers, and the
+  service all stay.
+
+  Two ways the uninstall could damage a user's own configuration are fixed with
+  it. Restoring the default model overwrote whatever was there with the snapshot
+  taken at install — so a model chosen afterwards through the harness's own
+  Models page was silently discarded; the restore now applies only over a
+  default this router wrote. And with no snapshot left to restore, a
+  router-owned default was left in place pointing at the provider the same
+  uninstall had just removed; it is now taken out.
+
+
+- **A client the tray cannot watch keeps the router running.** The tray's
+  presence setting could tie the router to the Codex and ChatGPT desktop apps
+  and stop it 30 seconds after both closed. `NSRunningApplication` enumerates
+  app bundles and nothing else, so that setting could only ever see those two:
+  a `codex` TUI in a terminal and a `dsh` harness turn are both invisible to it.
+  Neither can be started on demand either — a turn that finds 127.0.0.1:4202
+  closed fails at once, while the stack behind that port takes up to 300 seconds
+  to warm — so a terminal user who tried the setting got a dead port and a
+  `doctor` line telling them to open an app they may not use.
+
+  `effectivePresenceMode()` now reports `always` whenever the harness route is
+  published or `codex` resolves on PATH, and the tray and `doctor` both act on
+  that instead of the raw mode. Detection errs toward finding a client: a false
+  positive costs a dormant toggle, a false negative costs somebody their next
+  request. The stored preference is overridden rather than rewritten, so
+  removing the client restores the user's own choice. `control --json` now
+  carries a `presence` block so the router owns the rule and the tray consumes
+  it rather than re-deriving it, and the tray picks up a change on the snapshot
+  it already polls.
+
+- **DeepSeek Harness is a supported target.** `--target dsh` publishes every
+  routed model into the harness's own `settings.yaml` as one provider route,
+  keyed to the same `/v1/responses` endpoint Codex already uses — so a harness
+  turn gets the router's tool-result ageing, vision bridge, prompt-token
+  substitution, bounded upstream retries, and tokens-per-second accounting
+  without a second request path. The harness's shipped bundle mounts
+  `dsh-llm-pi-ai` dormant and hot-reloads its settings document, so this is a
+  settings write rather than a plugin change and there is nothing to restart.
+  A target is a *client*, not a router: both share one service, one gateway,
+  one credential store, and one provider selection, so adding the second
+  integration never asks for a key again, and any change to the routable set
+  republishes whichever clients are installed rather than letting the two
+  drift apart.
+
+  The router owns exactly one key in each of the harness's two documents
+  (`llm-pi-ai.providers.codex-router` and `CODEX_ROUTER_CALLER_KEY`) and treats
+  every other byte as somebody else's: sibling routes, other sections,
+  comments, and other credentials survive a publish, and `dsh disable` restores
+  the document. A settings file the new fail-closed YAML lexer cannot read
+  unambiguously — a tab indent, a duplicate key, a multi-document stream, an
+  inline `providers` mapping — is refused with the file untouched and the line
+  named, rather than rewritten on a guess. Both documents are written 0600, the
+  same bound the harness holds them to, because the settings document carries
+  the managed base URL and the other carries the key it references.
+
+  Only selected, credentialed, listed, non-hidden routed models are published.
+  Native GPT models are not: they need the caller's own ChatGPT session, which
+  a harness request does not carry, so advertising them would offer a turn that
+  cannot authenticate — the same reason the vision-bridge engine candidates
+  exclude them here. Taking over the harness's default model is opt-in,
+  snapshotted, and reversible; delegation stays the user's, since
+  `dsh-tool-subagent` is composition rather than settings and
+  `./bin/model-router dsh subagent-preset` hands over the block to paste
+  instead of editing a preset the router does not own.
+
+- **`src/skills-install.mjs` no longer hijacks an unrelated `install`.** Its
+  CLI block ran on `process.argv[2]` alone with no entry-module guard, and
+  `install-manifest.mjs` imports it — so any command that transitively pulled
+  the manifest in while its own subcommand happened to be `install` or
+  `uninstall` installed the Codex skill pack and exited 0 before doing its own
+  work. Every other module in the repository already guarded this; this one
+  now does too.
+
+- **Command Code's catalog caught up, and one dead route fixed.** The Messages
+  route advertised Haiku 4.5 as `claude-haiku-4-5`, the undated alias every
+  other Anthropic surface accepts. Command Code's catalog does not carry it —
+  only the dated `claude-haiku-4-5-20251001` — so that route could never have
+  resolved, and it was the one registered id in either reseller family absent
+  from the live `/models` list. A registry assertion now pins the dated id.
+
+  Fourteen models Command Code serves and the registry did not are now checked
+  in: `grok-4.6`, `claude-opus-5`, `gpt-5.6-sol`, `gpt-5.6-terra`,
+  `gemini-3.7-flash`, `GLM-5.2-Fast`, `Kimi-K2.7-Code-Highspeed`,
+  `Qwen3.7-Flash`, and first entries for five vendors the reseller added since
+  the last sweep — `meta/muse-spark-1.2`, `nvidia/nemotron-3-ultra`,
+  `sakana/fugu-ultra`, `thinkingmachines/inkling` and `inkling-small`, and
+  `poolside/laguna-s-2.1`. Context windows come from Command Code's own
+  `/models` payload rather than the model name; effort ladders, image support,
+  and request profiles mirror the already shipped sibling of the same upstream
+  line, or fall back to the conservative single-`high` floor for a vendor with
+  no prior entry. Older point releases the catalog still lists behind a
+  registered newer sibling (GLM-5/5.1, Kimi K2.5/K2.6, MiniMax-M2.5,
+  Qwen3.6, Step-3.5, gemini-3.1/3.5-flash-lite, gpt-5.3/5.4, mimo-v2.5) stay
+  out deliberately; `bin/curate-models commandcode` still reaches them per
+  user.
+
+  These fourteen route correctly — a live request reaches Command Code and
+  comes back with the account's own plan verdict — but their capability
+  metadata is **not** live-verified: the test account is on the Go plan, which
+  answers every Provider API call with "Your Go plan doesn't include API
+  access." That blocks the tool-calling, streaming, and compaction probes for
+  the twenty-one models already shipped just as much as for the new ones. Run
+  `./bin/test-model 'commandcode/SLUG' --live --yes` on a Provider-plan account
+  before treating any of them as proven.
+
+  opencode Go needed no additions. All seven ids its catalog lists and the
+  registry omits (`glm-5`, `kimi-k2.5`, `minimax-m2.5`, `qwen3.5-plus`,
+  `mimo-v2-pro`, `mimo-v2-omni`, `hy3-preview`) are older releases or preview
+  channels of models already registered, and every registered opencode Go id
+  is still live.
+
+- **Windows installs the tray companion, and keeps it.** Nothing on Windows
+  ever built or started it: `install.ps1` had no tray option at all, the
+  installer's own decision helper excluded the platform outright, and
+  `control tray enable` answered `{"supported":false}` and exited 0 — a silent
+  no-op that reads as success while no tray was ever going to appear. The only
+  route was knowing to run `scripts/build-desktop-tray.ps1` by hand, and even
+  then the companion vanished at the next reboot. `install.ps1 -WithTray` (and
+  `-NoTray`, matching `install.sh`) now builds it and registers a `Codex Router
+  Tray` logon task, kept separate from the router's own task so stopping one
+  never takes the other down. Quitting from the tray menu stays quit: the
+  restart setting covers a crash, not a clean exit. A platform with no
+  supervisor now says so on stderr rather than reporting success, and the
+  guidance names the `^` overflow that hides new tray icons on Windows 11.
+
+- **Windows stops mistaking its own spawn failures for provider problems.** A
+  command resolved on Windows and a command Windows can spawn are two different
+  things: `where.exe` lists the extensionless npm shim first, and Node has
+  refused to run a `.cmd` shim without a shell since CVE-2024-27980. Four
+  copies of the same lookup helper took line one anyway, and the spawn errors
+  that followed were each read as something else. The official Grok CLI was the
+  worst of it — a healthy npm install failed to launch, raising the same
+  `spawn UNKNOWN` that Smart App Control raises, so the router announced that
+  Windows application control had blocked it and told the operator to give up
+  on OAuth and use an API key. Even had the preflight passed, the token refresh
+  behind it spawned the shim the same unusable way.
+
+  Resolution and launching now live in one module and are used everywhere:
+  the routed-subagent proof run (which hands Codex a whole sentence, so it
+  cannot go through a shell that joins arguments on spaces), the Codex account
+  usage panel, the doctor's Codex configuration probe, the `npm install -g` and
+  sign-in paths for provider CLIs, and the precedence probe. Arguments are
+  escaped for `cmd.exe` rather than concatenated, so a path under
+  `C:\Program Files` and a prompt containing spaces both survive.
+
+- **Three more Windows-only breakages in the same family.** The Codex account
+  usage panel kept a private two-line search for the CLI — an undocumented
+  environment variable, a macOS-only path, then the bare name — which finds
+  nothing on Windows, so the panel reported "the Codex app-server could not be
+  started" on every machine; it now uses the shared discovery and kills the
+  process tree rather than leaking a Codex process per poll. `control apply`
+  ran the POSIX `bin/enable` script, which Windows cannot execute, and now
+  takes the PowerShell installer that `doctor --fix` already uses. The
+  vision-model download worker was the one detached child without
+  `windowsHide`, so it opened a console window for the length of a
+  multi-gigabyte pull.
+
+- **A local Ollama the router could find is one it can also run.** The vision
+  host probed for Ollama through the runtime's known install locations but then
+  spawned the bare name, so a Windows install under `%LOCALAPPDATA%` reported
+  as available and failed at the next call. Both now use the same resolver.
+
+- **Routed models that emit integer tool arguments as JSON floats no longer
+  get those calls rejected by Codex.** Grok 4.6 was sending
+  `timeout_ms: 20000.0`; Codex's native `shell_command` schema wants a `u64`,
+  so every agentic turn died before the command ran. The response rewrite now
+  turns whole-number tokens into integers on the way back, including native
+  tools that are not namespaced. Genuine fractions are left alone.
+
+## 0.4.0-beta.3
+
+- **The usage panel shows what is left of your plan for xAI OAuth, MiniMax,
+  Command Code, and opencode Go.** MiniMax reads its coding-plan remains
+  endpoint (interval and weekly windows), Command Code reads the same billing
+  credits route its official CLI polls (5-hour and weekly windows), and
+  opencode Go reads its usage endpoint (rolling, weekly, and monthly windows,
+  shared across the protocol variants). A fresh xAI weekly window arrives with
+  its zero usage omitted from the wire format, which used to read as
+  "unavailable" instead of everything left — a billing period with no percent
+  now reads as 0% used. Every fetcher refuses to send the credential anywhere
+  but the provider's own host, and any failure degrades to the previous
+  router-traffic view.
+
+- **The subagent list shows only models you can actually pick.** Hidden models
+  rendered as permanently locked rows; they are filtered out, with a note
+  giving the hidden count and pointing at the picker section that brings them
+  back. Toolbar labels name the setting they change, both surfaces note that
+  subagent choices never hide models from Codex's picker, and the tray's two
+  look-alike provider panels no longer expand in lockstep.
+
+- **A failed request names its cause all the way down.** The transport reports
+  every connection-level failure as a bare `TypeError: fetch failed` with the
+  code that says why buried on the cause chain, which left repeated native
+  failures unexplainable from the retained log. The router and every forwarder
+  now log the whole chain — names and codes only where a failure can wrap
+  upstream response text. Name-resolution and local-resource failures
+  (`ENOTFOUND`, `EADDRNOTAVAIL`, `ENOBUFS`) joined the retryable set, since
+  all three fail before a connection exists. Every native failure now records
+  a usage event, so a 502 without one can no longer hide inside the router,
+  and an uncaught crash exits with its own code (95/94) and full chain in the
+  log, so a supervisor's exit line alone distinguishes an in-process crash
+  from an external kill.
+
+- **One union-rooted tool schema no longer kills every xAI OAuth turn.** xAI
+  rejects the whole request when any tool's parameter schema roots in an
+  `anyOf`/`oneOf`/`allOf` union, and Codex's own automation tool ships one —
+  so a Grok session that never touched automations still died on its first
+  message. Union roots are flattened into a single object schema (branch
+  properties merged, `required` narrowed to what every branch demands) and
+  object-rooted schemas pass through untouched.
+
 - **GitHub Copilot is available as a catalog-only provider.** A
   fine-grained PAT with the Copilot Requests permission is validated through
   the Copilot account endpoint; account-selected inference hosts are restricted

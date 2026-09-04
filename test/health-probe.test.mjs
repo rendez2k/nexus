@@ -279,7 +279,7 @@ test("a real slow HTTP service is polled through fetch until it answers", async 
   try {
     const started = Date.now();
     await waitForHealth({
-      label: "Nexus",
+      label: "Codex router",
       url: `http://127.0.0.1:${port}/health`,
       timeoutMs: 20_000,
       expectedService: "codex-router",
@@ -313,6 +313,23 @@ test("a real closed port is refused rather than aborted", async () => {
   assert.ok(Date.now() - started < 2_500, "a refused port must not stretch the budget");
 });
 
+test("a health response body is drained when no service name is required", async () => {
+  let drained = false;
+  await waitForHealth({
+    label: "API forwarder",
+    url: URL_UNDER_TEST,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => {
+        drained = true;
+        return new ArrayBuffer(0);
+      },
+    }),
+  });
+  assert.equal(drained, true);
+});
+
 test("a shutdown interrupts the wait", async () => {
   let shuttingDown = false;
   setTimeout(() => {
@@ -340,7 +357,7 @@ test("the frontend wait keeps checking that the right service answered", async (
   };
 
   await waitForHealth({
-    label: "Nexus",
+    label: "Codex router",
     url: URL_UNDER_TEST,
     timeoutMs: 5_000,
     expectedService: "codex-router",

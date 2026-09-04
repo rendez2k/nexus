@@ -1,15 +1,34 @@
-# Nexus
+# Codex Router
 
 Use Anthropic, Kimi, DeepSeek, xAI, GitHub Copilot, opencode Go, Command Code,
-and future external models inside the Codex App and CLI through one local,
-credential-isolating router.
+and future external models inside the Codex App and CLI — or inside
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) or
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) — through
+one local, credential-isolating router.
 The integration speaks the Responses API and merges external entries into
 Codex's native model catalog, so routed models appear in the normal picker
-next to the native GPT models.
+next to the native GPT models. The same routed models publish into the
+harness as one provider route, so they appear in its Models page too, and into
+Gemini CLI through a Gemini-shaped endpoint the router serves for it.
 
-Nexus is an independent community project. It is not affiliated with or
+Every client shares one installation: one background service, one gateway, one
+set of provider credentials, one provider selection. Installing a second or
+third integration does not ask for a single key again.
+
+The router is also the source of truth for routed model policy. Provider/model
+selection and external picker visibility are stored locally in the router state
+directory (`model-picker.json` is an explicit allowlist: only router models you
+show or select during curation are published), then republished to every
+installed client. A signed-in Codex
+installation keeps its native GPT catalog and native visibility client-owned;
+the router never lets an external overlay erase that original picker. Codex's
+active task remains in Codex configuration. Its default model does too unless
+you explicitly opt into a router-owned routed default; that choice is saved
+locally, survives rebuilds, and can be restored to the prior Codex default.
+
+Codex Router is an independent community project. It is not affiliated with or
 endorsed by OpenAI, GitHub, Anthropic, Moonshot AI, DeepSeek, OpenRouter,
-opencode, or the referenced opencodex project.
+opencode, Google, or the referenced opencodex project.
 
 ## Give the link to your agent
 
@@ -29,7 +48,47 @@ If compatible authentication already exists, an agent can finish everything
 except the final app restart. Provider credentials are entered only through a
 hidden local terminal prompt.
 
-## Guided install
+## Install
+
+### Homebrew
+
+If you already use Homebrew, install Codex Router from this repository's tap:
+
+```sh
+brew tap duolahypercho/codex-router https://github.com/duolahypercho/codex-router
+brew install codex-router
+codex-router setup --guided
+```
+
+The tap URL is needed only once. Homebrew installs the formula's Node.js,
+Python, and build dependencies; `codex-router setup --guided` performs the
+one-time provider selection, credential-safe authentication, background
+service installation, and Codex integration. When setup finishes, fully quit
+and reopen Codex, create a new task, and choose a routed model from the picker.
+
+Upgrade an existing Homebrew installation with:
+
+```sh
+brew upgrade codex-router
+```
+
+Before removing the formula, remove the per-user service and managed Codex
+configuration that Homebrew does not own:
+
+```sh
+codex-router uninstall
+brew uninstall codex-router
+```
+
+The first Homebrew install can take considerably longer than the guided
+installer below because the formula builds the locked Python dependencies from
+source. The release workflow generates `Formula/codex-router.rb` from
+`requirements/python.txt` and refreshes it for each release.
+
+Maintainers preparing the eventual `homebrew/core` submission should follow
+[`docs/HOMEBREW_CORE.md`](docs/HOMEBREW_CORE.md).
+
+### Guided installer
 
 macOS or Linux:
 
@@ -51,6 +110,11 @@ official `kimi login`, prompts invisibly for provider credentials, installs a pe
 background service, and verifies every local layer. It never makes a paid test
 request unless `--smoke-test` is explicitly selected.
 
+To validate the install and uninstall lifecycle before trusting the router
+with any credential, pass `--no-provider --no-discovery`: the router installs
+idle, reads no credential from anywhere, and answers Codex traffic with a
+local error. See [docs/INSTALL.md](docs/INSTALL.md#credential-free-idle-install).
+
 Requirements:
 
 - The Codex App or CLI.
@@ -68,6 +132,7 @@ Linux installations support the Codex CLI.
 | K2.7 Coding (OAuth) | `kimi-oauth/kimi-for-coding` | Existing Kimi Code CLI OAuth session |
 | Kimi K3 (OAuth) | `kimi-oauth/k3` | Existing Kimi Code CLI OAuth session |
 | Kimi K3 (API) | `kimi-api/kimi-k3` | Separately billed Kimi Platform API key |
+| Kimi K3 (China API) | `kimi-api-cn/kimi-k3` | Separately billed Moonshot **China** platform key |
 | DeepSeek V4 Flash (API) | `deepseek/deepseek-v4-flash` | DeepSeek API key |
 | DeepSeek V4 Pro (API) | `deepseek/deepseek-v4-pro` | DeepSeek API key |
 | Grok 4.5 (OAuth) | `grok-oauth/grok-4.5` | Official Grok CLI OAuth session |
@@ -79,6 +144,8 @@ Linux installations support the Codex CLI.
 | DeepSeek V4 Pro (Ollama Cloud) | `ollama-cloud/deepseek-v4-pro` | Ollama Cloud API key |
 | DeepSeek V4 Flash (Ollama Cloud) | `ollama-cloud/deepseek-v4-flash` | Ollama Cloud API key |
 | MiniMax M3 | `minimax-token-plan/minimax-m3` | MiniMax Token Plan API key |
+| MiMo-V2.5 (Xiaomi API) | `xiaomi-mimo/mimo-v2.5` | Xiaomi MiMo API key |
+| MiMo-V2.5-Pro (Xiaomi API) | `xiaomi-mimo/mimo-v2.5-pro` | Xiaomi MiMo API key |
 | Qwen3.8 Max (Plan) | `qwen-plan/qwen3.8-max` | Alibaba Model Studio plan API key |
 | Qwen3.8 Max Preview (Plan) | `qwen-plan/qwen3.8-max-preview` | Alibaba Model Studio plan API key |
 | Qwen3.7 Max (Plan) | `qwen-plan/qwen3.7-max` | Alibaba Model Studio plan API key |
@@ -87,8 +154,12 @@ Linux installations support the Codex CLI.
 | DeepSeek V4 Pro (Qwen Plan) | `qwen-plan/deepseek-v4-pro` | Alibaba Model Studio plan API key |
 | DeepSeek V4 Flash (Qwen Plan) | `qwen-plan/deepseek-v4-flash-0731` | Alibaba Model Studio plan API key |
 | GLM-5.2 (Qwen Plan) | `qwen-plan/glm-5.2` | Alibaba Model Studio plan API key |
+| GLM-5.3 (Coding Plan) | `zai-coding/glm-5.3` | Z.ai GLM Coding Plan API key |
 | GLM-5.2 (Coding Plan) | `zai-coding/glm-5.2` | Z.ai GLM Coding Plan API key |
 | GLM-5-Turbo (Coding Plan) | `zai-coding/glm-5-turbo` | Z.ai GLM Coding Plan API key |
+| GLM-5.3 (Z.ai API) | `zai-api/glm-5.3` | Separately billed Z.ai platform API key |
+| GLM-5.2 (Z.ai API) | `zai-api/glm-5.2` | Separately billed Z.ai platform API key |
+| GLM-4.7 (Z.ai API) | `zai-api/glm-4.7` | Separately billed Z.ai platform API key |
 | Muse Spark 1.2 (Meta) | `meta/muse-spark-1.2` | Meta Model API key |
 | Muse Spark 1.2 Contributor (Meta) | `meta/muse-spark-1.2-contributor` | Meta Model API key |
 | Muse Spark 1.1 (Meta) | `meta/muse-spark-1.1` | Meta Model API key |
@@ -104,6 +175,14 @@ Linux installations support the Codex CLI.
 | Qwen3.7 Max (ClinePass) | `clinepass/qwen3.7-max` | ClinePass API key |
 | Qwen3.7 Plus (ClinePass) | `clinepass/qwen3.7-plus` | ClinePass API key |
 | Qwen3.8 Max (ClinePass) | `clinepass/qwen3.8-max` | ClinePass API key |
+
+Kimi has two API platforms and they are not interchangeable. `kimi-api` is the
+global console at platform.moonshot.ai; `kimi-api-cn` is the mainland console at
+platform.moonshot.cn. Accounts, billing, and keys are separate — a key minted on
+one platform is rejected by the other — so each is enabled and credentialed on
+its own, and both can be active at once. Pick the one matching where your key
+was created. (`kimi-oauth` is a third, distinct thing: the Kimi Code
+subscription reused through the official CLI's session.)
 
 The Codex catalog is credential-aware. It includes models only from enabled
 external providers with a stored credential or valid OAuth session. Native GPT
@@ -130,10 +209,27 @@ surface Grok Build uses. xAI's backend chooses when to search and how to filter
 results; the router does not take search env knobs or request-side filter
 config. Install the official CLI and authenticate before enabling the route:
 
+Other routed providers can use Codex's client-side (standalone) web search when
+the selected model has been verified for it. DeepSeek V4 Flash is enabled on
+its direct API and opencode Go routes. A compatible model declares
+`"searchTool": { "mode": "standalone" }` in its registry or user-model
+metadata, and the managed Codex provider table advertises
+`supports_standalone_web_search = true`. This is intentionally opt-in per
+model; the router does not infer search compatibility from an OpenAI-compatible
+endpoint.
+
 ```sh
 npm install -g @xai-official/grok
 grok login --oauth
 ```
+
+MiMo (Xiaomi API) uses Xiaomi's official OpenAI-compatible endpoint at
+`https://api.xiaomimimo.com/v1`. Unlike MiMo reseller routes, the direct API
+serves `mimo-v2.5` and `mimo-v2.5-pro` through the standard
+`/chat/completions` surface, so requests never touch the Responses gateway.
+`mimo-v2.5` is verified for text/image input and Codex standalone web search;
+`mimo-v2.5-pro` is text-only. Store the key with
+`./bin/model-router codex provider-key xiaomi-mimo set`.
 
 Native GPT models continue to use Codex directly. There is no separate GPT or
 ChatGPT OAuth provider in the router.
@@ -192,10 +288,19 @@ the Singapore region. Coding Plan subscribers or other regions can point
 `QWEN_PLAN_BASE_URL` at their dashboard-issued base URL. Plan keys use the
 `sk-sp-` prefix and are separate from pay-as-you-go Model Studio keys; Alibaba
 reserves plan endpoints for interactive coding tools.
-The Z.ai entries use the GLM Coding Plan's dedicated endpoint and its
+The `zai-coding` entries use the GLM Coding Plan's dedicated endpoint and its
 subscription API key. That key is not interchangeable with general Z.ai
 platform keys, and Z.ai reserves the coding endpoint for interactive coding
-tools.
+tools. The metered platform is therefore a separate provider, `zai-api`, on
+`https://api.z.ai/api/paas/v4` with its own key file and its own environment
+variable (`ZAI_PLATFORM_API_KEY`, never the plan's `ZAI_API_KEY`) — connecting
+one does not connect the other. GLM-5.3 ships on both routes with Z.ai's
+documented low/high/max reasoning tiers and a one-million-token context
+window. The `[1m]` model suffix that circulated for GLM-5.3 does not exist on
+either Z.ai endpoint -- both the OpenAI-compatible coding route and the
+Anthropic route reject `glm-5.3[1m]` with error 1214 -- and it was never
+needed: a live run accepted 990,020 prompt tokens on the plain `glm-5.3`
+code.
 Beyond the built-in models, each API-key provider's live catalog can be
 curated interactively: `./bin/curate-models PROVIDER` lists the models the
 provider currently advertises that are not in the registry, lets you toggle
@@ -204,7 +309,11 @@ the ones you want, and stores them as user models in protected state
 command and deselecting). Curation asks for each new model's context window,
 image support, and reasoning efforts — so curated models get the effort
 switcher in the picker — and everything defaults conservatively when
-unanswered. The non-interactive `--models id1,id2` form is additive: it keeps
+unanswered. The context window is not guessed when the provider publishes one:
+the `context_length` its catalog advertises for the model is offered as the
+default and stored by both curation forms, so a million-token model is not
+filed as a 131K one and told to compact at 110K. The non-interactive
+`--models id1,id2` form is additive: it keeps
 existing curated entries and their metadata while adding the named models;
 `--efforts minimal,low,medium,high,xhigh` sets the new entries' ladder. Remove
 entries explicitly with `--remove id1,id2`. Every value stays editable in
@@ -235,16 +344,19 @@ enable the family:
 ```sh
 ./bin/model-router codex provider-key opencode-go set
 ./bin/model-router codex providers enable opencode-go
-./bin/model-router codex multi-agent on
 ```
 
-The desktop panel and macOS tray Settings tab also provide per-model controls:
-which enabled models can run as subagents, and which models appear in the
-Codex picker.
+The desktop panel and macOS tray Settings tab provide both per-model controls
+and provider-level Select all / Unselect all actions for which registry-proven
+v2 models can run as subagents and which models appear in installed client
+pickers. Local settings cannot promote an unverified model. Fully quit and
+reopen Codex after changing either list; DeepSeek Harness hot-reloads its route,
+and the next Gemini CLI invocation reads the new environment.
 
 | Picker label | Model ID |
 | --- | --- |
 | Grok 4.5 (opencode Go) | `opencode-go/grok-4.5` |
+| GLM-5.3 (opencode Go) | `opencode-go/glm-5.3` |
 | GLM-5.2 (opencode Go) | `opencode-go/glm-5.2` |
 | GLM-5.1 (opencode Go) | `opencode-go/glm-5.1` |
 | Kimi K3 (opencode Go) | `opencode-go/kimi-k3` |
@@ -274,59 +386,117 @@ intentionally coexist because the subscription bills separately. Point
 `OPENCODE_GO_BASE_URL` (or `OPENCODE_ZEN_BASE_URL`) elsewhere to override the
 endpoints.
 
-### Command Code Provider API
+### Anonymous free model gateways
+
+Two additional entries use providers' documented free-model exceptions. Neither
+asks for an API key, neither is ever selected on your behalf, and each is pinned
+in code to its official endpoint.
+
+| Picker label | Provider ID | Endpoint | Free-model rule |
+| --- | --- | --- | --- |
+| OpenCode Free | `opencode-free` | `https://opencode.ai/zen/v1` | `big-pickle` and IDs ending in `-free` |
+| Kilo Free | `kilo-free` | `https://api.kilo.ai/api/gateway` | IDs ending in `:free` |
+
+Both are catalog-only and deliberately ship no checked-in model metadata: the
+provider's live `/models` response is filtered to the free subset and then added
+locally with `./bin/curate-models`.
+
+```sh
+./bin/model-router codex providers enable opencode-free
+./bin/curate-models opencode-free
+
+./bin/model-router codex providers enable kilo-free
+./bin/curate-models kilo-free
+```
+
+OpenCode Console documents that free chat models can omit the bearer header;
+the paid Console models still require a key. Kilo documents anonymous access
+only for `:free` models and limits anonymous traffic to 200 requests per hour
+per IP. Both catalogs and limits are provider-controlled and can change, so
+the router refuses paid IDs and shows traffic-only usage when no quota header
+has been observed. Kilo's general SDK setup guide still asks external SDK
+users for an API key; this entry intentionally covers only the gateway's
+documented anonymous `:free` path.
+
+### Custom: one provider, many endpoints
+
+Every other provider owns one address. `custom` owns none — each of its models
+names its own endpoint, its own auth, and its own metadata, so a single picker
+entry can hold a free community endpoint, a friend's self-hosted server, and a
+paid API you have a key for, all at once.
+
+```sh
+./bin/model-router codex providers enable custom
+```
+
+Enabling it costs nothing and asks for nothing: a model that needs a key says so
+on its own row. It is never selected for you and never part of the default set,
+because what it holds is whatever somebody put in it.
+
+| Model | Endpoint | Auth |
+| --- | --- | --- |
+| Qwen3.8-27-free-victor | `https://g9hnto0u7lvbu837.us-east-2.aws.endpoints.huggingface.cloud/v1` | none |
+
+That first model is a free community [Hugging Face Inference
+Endpoint](https://huggingface.co/spaces/victor/Qwen3.8-27B-free-endpoint) for
+`Qwen/Qwen3.8-27B`, published by an individual rather than by Qwen or Hugging
+Face: BF16 on one H200 behind vLLM, 262,144-token context, image input, tool
+calling, and a thinking budget you dial with the normal effort picker. It is
+shared and rate limited to roughly 30 requests per minute per IP, and its owner
+says it will be retired once launch interest fades — so treat it as a model to
+try, not one to depend on.
+
+An endpoint reached with **no credential** is the one thing a registry fragment
+cannot introduce on its own. Its address has to be allowlisted in
+`src/model-registry.mjs`, exactly as an anonymous provider's is, because
+otherwise adding a JSON file under `config/custom/` would be enough to send your
+prompts to any host on the internet with nothing to authenticate them. An
+endpoint that carries a key, or one that stays on loopback, needs no allowlist
+entry — the key or the address is already the boundary.
+
+> **Use these at your own risk.** The two gateways above, and any `custom` model
+> whose endpoint carries no credential, are the only routes here that reach an
+> upstream with no account behind them, and that changes what "supported" can
+> mean. Nobody has agreed to serve you: access is a published exception, not an
+> entitlement, and it can be narrowed, rate-limited, or withdrawn without
+> notice. On the two reseller gateways the naming rule is a heuristic rather
+> than a promise — their catalogs
+> carry no pricing field to check, so a model whose ID says `free` can still
+> answer `401 Paid inference requests require an Authorization bearer token`,
+> and the router cannot tell in advance. Anonymous traffic is identified by IP,
+> so a router fanning out parallel subagents spends a budget shared with
+> everyone behind that address. Treat these as a way to try a model, not as
+> something to depend on: nothing in this repository can keep them working, and
+> a failure here is not a bug the project can fix.
+
+### Command Code
 
 Command Code's official Provider API is an OpenAI-compatible chat completions
 surface plus an Anthropic Messages surface at `https://api.commandcode.ai/provider/v1`
 (`COMMAND_CODE_API_KEY` or `COMMANDCODE_API_KEY` in the environment, or store
-the key once, or reuse a `command-code login` session). It requires the
-Provider plan or higher and uses the same key that authenticates the Command
-Code CLI. Everything appears as one
+the key once). Every plan except Go has API access; GOAT, Pro, Max, Team, and
+Provider accounts use the API. Everything appears as one
 "Command Code" provider; internally the catalog is split between
 `commandcode` for Chat Completions models and `commandcode-messages` for
 models that require the Messages protocol (Claude).
 
-**The Provider plan is required, and signing in does not grant it.** A Go-plan
-account can run the Command Code CLI but is refused by `/provider/v1` with
-`Your Go plan doesn't include API access`. That is an entitlement, not a
-credential problem: no sign-in, key, or reinstall changes it. Check the plan
+**The Go plan is the exception.** A Go-plan account is refused by `/provider/v1`
+with `Your Go plan doesn't include API access`. That is an entitlement, not a
+credential problem: no key or reinstall changes it. Check the plan
 at [commandcode.ai/billing](https://commandcode.ai/billing) before enabling
 this provider.
 
-Given the Provider plan, there are two ways to authenticate, and either one is
-enough.
-
-**Sign in through the browser (OAuth).** `command-code login` opens the
-Command Code authorization page, receives the callback on a temporary local
-server, and writes the key it mints to `~/.commandcode/auth.json`. The router
-reads that file, so a signed-in machine needs no key of its own:
-
-```sh
-npm install -g command-code
-command-code login
-./bin/model-router codex providers enable commandcode
-./bin/model-router codex multi-agent on
-```
-
-The macOS tray offers the same flow: the Command Code row has an
-**Install & Sign In** button (**Sign In** once the CLI is present) next to
-**Add Key**. `command-code login` draws a full-screen terminal interface, so
-the tray opens a Terminal window to run it and waits for the credential rather
-than piping it. The router only reads that file — it never rewrites, copies,
-or deletes it — so `command-code logout` also revokes the router's access.
-
-**Store a key instead.** Create one in Command Code Studio and save it here:
+**Store an API key.** Create one in Command Code Studio and save it here:
 
 ```sh
 ./bin/model-router codex provider-key commandcode set
 ./bin/model-router codex providers enable commandcode
-./bin/model-router codex multi-agent on
 ```
 
-When both exist, the exported environment variable wins, then the key stored
-here, then the macOS Keychain, and the CLI sign-in last: a key you deliberately
-saved is never silently replaced by a session. `doctor` names whichever source
-is live.
+When multiple API-key sources exist, the exported environment variable wins,
+then the key stored here, then the macOS Keychain. `doctor` names whichever
+source is live. The router does not install, launch, or read a Command Code
+CLI session.
 
 | Picker label | Model ID |
 | --- | --- |
@@ -357,9 +527,11 @@ enabling or disabling either toggles the whole family together. The live
 catalog is available without authentication from
 `https://api.commandcode.ai/provider/v1/models`, and additional models can be
 added per machine with `./bin/curate-models commandcode`. Point
-`COMMANDCODE_BASE_URL` elsewhere to override the endpoint. Command Code does
-not document an account-balance API, so the tray links to Command Code Studio
-for credits and usage.
+`COMMANDCODE_BASE_URL` elsewhere to override the endpoint — both routes follow
+it, so a redirected provider stays coherent. The tray reports the plan's
+remaining credits and its 5-hour and weekly windows from the same undocumented
+billing route the official CLI polls, and links to Command Code Studio when
+that route is unavailable.
 
 ### Meta Model API
 
@@ -398,6 +570,8 @@ often for the repository to pin and live-verify individual entries:
 | Hugging Face Router | `huggingface` | `https://router.huggingface.co/v1` |
 | Google Gemini API | `gemini-api` | `https://generativelanguage.googleapis.com/v1beta/openai` |
 | GitHub Copilot | `github-copilot` | Account-specific GitHub Copilot endpoint |
+| Chutes | `chutes` | `https://llm.chutes.ai/v1` |
+| OrcaRouter | `orca` | `https://api.orcarouter.ai/v1` |
 
 Add a key, then pick the models you want from the provider's live catalog:
 
@@ -406,9 +580,28 @@ Add a key, then pick the models you want from the provider's live catalog:
 ./bin/curate-models groq
 ```
 
+OrcaRouter's public catalog includes paid models and concrete zero-price model
+deployments. Inference still requires an OrcaRouter API key, including for free
+models. The moving `orcarouter/free` meta-router is intentionally not curated:
+the picker shows the concrete model identity with a **Free** badge instead. To
+add every currently advertised free OpenAI-compatible model without pinning
+that changing list in the repository:
+
+```sh
+./bin/model-router codex provider-key orca set
+./bin/curate-models orca --free-only --apply
+```
+
+The free list is read live from OrcaRouter's `/models` response. Re-run the
+command when its catalog changes, and verify a curated model with
+`./bin/test-model 'orca/MODEL_ID' --live --yes` before relying on it for
+tool-driven work.
+
 Curated entries use the context window, image support, and reasoning efforts
-you provide during curation (conservative defaults otherwise) and are local
-to your machine. Verify a model before relying on it:
+you provide during curation — the context window falling back to the one the
+provider's catalog advertises, and to a conservative default only when it
+advertises none — and are local to your machine. Verify a model before relying
+on it:
 
 ```sh
 ./bin/test-model 'groq/MODEL_ID' --live --yes
@@ -429,7 +622,9 @@ Gemini is routed through Google's OpenAI-compatible surface rather than the
 native Gemini protocol, so it shares the existing forwarder and needs no
 separate adapter.
 
-Only enabled providers appear in the Codex picker:
+Only explicitly selected router models from enabled providers appear in
+installed client pickers. Adding a model during curation selects it for the
+picker; merely enabling a provider does not flood the list:
 
 ```sh
 ./bin/model-router codex providers
@@ -439,6 +634,21 @@ Only enabled providers appear in the Codex picker:
 ```
 
 On Windows, use `./model-router.ps1 codex` with the same commands.
+
+### Router-owned default model (optional)
+
+In a normal signed-in Codex installation, you can opt into an external router
+model as the default for new tasks. The model must already be selected for the
+picker. The router snapshots the prior Codex default, reapplies your router
+choice after an update or repair, and restores that prior default when cleared:
+
+```sh
+./bin/control router-default set deepseek/deepseek-v4-flash
+./bin/control router-default clear
+```
+
+This is separate from login-free mode, which has always owned its routed
+default. Fully quit and reopen Codex after changing either default.
 
 The API-key prompt disables terminal echo. Protected files use mode `600` on
 POSIX and an inheritance-disabled, current-user ACL on Windows. Diagnostics
@@ -462,6 +672,85 @@ on the loopback socket and bytes produced after decompression. The defaults are
 `MODEL_ROUTER_MAX_BODY_BYTES` and `MODEL_ROUTER_MAX_DECODED_BODY_BYTES`
 respectively when a deliberately larger local workload requires it.
 
+For routed external models, old textual tool results larger than 32 KiB are
+compacted after the model has acted on them. The four newest tool results stay
+intact, and each compacted result keeps a hash, head/tail evidence, and an exact
+rerun instruction.
+
+This is **off by default.** It rewrites what the model sees mid-conversation,
+so it is opted into rather than discovered after it has already altered a
+session. Turning it on is remembered: a stored answer is kept verbatim and is
+never re-defaulted by a later release.
+
+Toggle **Compact old tool results** in the router Settings;
+the next external-model request sees the change without restarting Codex or the
+router. The equivalent CLI commands are `./bin/control tool-result-aging on`,
+`off`, and `status`.
+
+Native OpenAI traffic is unchanged by default. `./bin/control
+tool-result-aging native on` extends the same compaction to native GPT models;
+`native off` restores the default. It is opt-in because it changes what is sent
+to OpenAI's own endpoint, and an install that has never run it keeps the
+pre-existing behavior. Set `CODEX_ROUTER_TOOL_RESULT_AGING=0` for a hard
+environment-level override that disables both the routed and the native path.
+
+Where compaction parks the exact original bytes of a result it rewrote, they go
+to an owner-private store at `<state dir>/retained-tool-results` (override with
+`MODEL_ROUTER_TOOL_RESULT_RETENTION_DIR`). Nothing evicts that store, so both a
+way to see it and a way to empty it are part of the feature:
+
+```sh
+./bin/doctor                                     # count, size, oldest entry, TTL
+./bin/control tool-result-aging purge            # says what it would remove
+./bin/control tool-result-aging purge --yes      # removes it
+./bin/control tool-result-aging purge --expired  # only what the TTL outlived
+./bin/control tool-result-aging ttl 30           # keep retained results 30 days
+./bin/control tool-result-aging ttl off          # keep them until purged
+./bin/control tool-result-aging ttl default      # back to 7 days
+```
+
+The doctor row appears whether or not the store exists, because an install that
+has never retained anything is the answer most people should see and seeing it
+is how the directory becomes discoverable at all. The purge is a report by
+default: without `--yes` it prints what it would remove and removes nothing, and
+`--dry-run` says the same thing explicitly and outranks `--yes`. It removes only
+files this store wrote, only inside that one directory, never recursing and
+never following a symlink out of it; anything else that ends up there is left in
+place and named.
+
+**Retained results expire after 7 days.** Nothing ever reads those bytes back
+into a turn — the receipt tells the model to repeat the tool call — so a
+retained original's only reader is you, and only while the session that produced
+it still matters. A week is also what keeps the store's caps from becoming
+permanent: at 512 files or 512 MiB retention stops accepting new results, and
+with a TTL that state drains by itself instead of waiting for somebody to notice
+it. Nothing sweeps on a timer: the store expires when it is next written to, and
+`purge --expired` runs the same sweep by hand, with the same `--yes` consent and
+the same containment as a full purge. The key that binds the store to this
+install is never expired, only purged. `ttl off` keeps everything until an
+explicit purge and is remembered verbatim, and the
+`CODEX_ROUTER_TOOL_RESULT_AGING=0` kill switch does not disable expiry — it
+stops the router rewriting context, while expiry is disk hygiene for bytes that
+are already written.
+
+To estimate the effect without spending provider quota, run:
+
+```bash
+node scripts/measure-tool-result-aging.mjs /path/to/rollout.jsonl
+```
+
+The report compares each observed compaction boundary and the latest history
+before and after aging; this is an estimate and spends no provider quota.
+`node scripts/aging-benchmark.mjs` reports the savings already recorded in
+`usage-events.jsonl` — measured turns rather than an estimate. For a
+live check, leave the setting on and inspect `usage-events.jsonl` after a routed
+turn; events that compacted history include `toolResultsAged` and
+`toolResultBytesSaved`. Those counters measure serialized context bytes, while
+provider-billed token counts remain the authoritative cost measurement.
+
+For a reproducible provider-reported A/B, see
+[`docs/tool-result-aging-benchmark.md`](docs/tool-result-aging-benchmark.md).
+
 The integration preserves the built-in OpenAI provider, native GPT models,
 ChatGPT sign-in, profiles, MCP settings, project trust, and reasoning defaults.
 It adds one marked root block and one inert custom-provider table to the user's
@@ -469,20 +758,57 @@ Codex config:
 
 ```toml
 # BEGIN codex-router-managed
-openai_base_url = "http://127.0.0.1:4102/_codex-router/<generated-capability>/v1"
+openai_base_url = "http://127.0.0.1:4202/_codex-router/<generated-capability>/v1"
 model_catalog_json = "/absolute/path/to/.codex/codex-router/merged-models.json"
 # END codex-router-managed
 
 # BEGIN codex-router-provider-managed
 [model_providers.codex-router]
-name = "Nexus (external models)"
-base_url = "http://127.0.0.1:4102/_codex-router/<generated-capability>/v1"
+name = "Codex Router (external models)"
+base_url = "http://127.0.0.1:4202/_codex-router/<generated-capability>/v1"
 wire_api = "responses"
+supports_standalone_web_search = true
 # END codex-router-provider-managed
 ```
 
 The generated path is local caller authentication. Do not paste the complete
 managed URL into an issue.
+
+### Run GPT-5.6 Sol at its documented 1M context window
+
+OpenAI documents GPT-5.6 Sol at 1,050,000 tokens. The catalog Codex ships
+declares 272,000, and it has moved more than once
+([openai/codex#31860](https://github.com/openai/codex/issues/31860),
+[#32806](https://github.com/openai/codex/issues/32806)). The single-install
+answer is `model_context_window` and `model_auto_compact_token_limit` in
+`~/.codex/config.toml`; the router's answer is a second entry in the picker, so
+the choice is per task rather than per machine:
+
+| Picker label | Model ID | Context window | Auto-compaction |
+| --- | --- | --- | --- |
+| GPT-5.6-Sol (1M context) | `gpt-5.6-sol-1m` | 1,000,000 | 900,000 |
+
+It is the same upstream model. Everything else in the entry — instructions,
+reasoning ladder, image input, subagent behavior — is copied from
+`gpt-5.6-sol`, and the router rewrites the slug back before the turn leaves for
+chatgpt.com, so OpenAI only ever sees the model it published.
+
+**It ships switched off,** because it costs more than the model it shadows: a
+turn resends the whole conversation, and a request above 272,000 input tokens
+is billed at a higher rate *in full*. Switch it on under **OpenAI** in the
+router Settings model list, or:
+
+```sh
+./bin/control picker set gpt-5.6-sol-1m show    # and `hide` to put it back
+```
+
+Your answer is remembered. Later catalog rebuilds never re-apply the default to
+a model you have already decided, in either direction. Fully quit and reopen
+Codex afterwards — the picker is read at startup.
+
+A login-free install does not get this entry: signed-out Codex only displays
+native slugs from a server-supplied allowlist, and a slot spent on a
+synthesized slug is a slot a routed model does not get.
 
 ### Windows Codex Desktop running through WSL
 
@@ -568,6 +894,20 @@ command directly, restart Codex yourself.
 
 ### Use a local model in Codex (experimental)
 
+LM Studio can run as a second local backend alongside Ollama. Its models use
+the stable `lmstudio/<model-id>` namespace, so identical model IDs loaded in
+the two backends never collide:
+
+```sh
+./bin/model-router codex providers enable lmstudio
+./bin/curate-models lmstudio
+```
+
+The default endpoint is `http://127.0.0.1:1234/v1`. Set
+`MODEL_ROUTER_LMSTUDIO_BASE_URL` when LM Studio listens elsewhere. Curation
+reads `/v1/models` and publishes only models explicitly chosen by the user.
+Ollama keeps its existing native route and local model controls.
+
 Models running on this machine can appear in Codex's picker like any other
 provider. They are labelled **experimental** there, and the label is earned:
 using a local model as the *vision reader* is reliable, but using one as a
@@ -578,7 +918,7 @@ want, then fully quit and reopen Codex.
 
 ```sh
 ./bin/control local-models list                  # installed, plus what to download
-./bin/control local-models install llama3.2:3b   # download, with progress
+./bin/control local-models install llama3.2:3b --yes # download, with progress
 ./bin/control local-models set llama3.2:3b on    # publish it to Codex
 ./bin/control local-models uninstall llava --yes # delete it from disk
 ```
@@ -599,6 +939,12 @@ For reading images only — cannot code:
   qwen2.5vl:3b         3.2 GB  accurate
   moondream            1.7 GB  captions-only
 ```
+
+The tray's **View more** panel also exposes the full 201-tag snapshot captured
+from the official Ollama pages for Gemma 4, Qwen 3.5/3.6/3.8, Nemotron 3 Super,
+Ornith, Nemotron 3, and Muse Glimmer, including quantized and MLX variants.
+Cloud aliases are listed for completeness but marked cloud-only and cannot be
+downloaded as local weights.
 
 A tool template is a floor, not a prediction — it has been wrong in both
 directions here. What settles it is running the real client:
@@ -629,6 +975,12 @@ Checking, installing, and removing are three separate actions on purpose:
 unchecking never deletes a download, and removing needs explicit confirmation.
 The `local` provider turns itself on with the first checked model and off when
 the last one clears, so there is no second switch to find.
+
+Checking or unchecking a model refreshes the picker and gateway routes, then
+restarts the router service so the running process actually serves the new
+`local/...` route. A router running in the foreground (for example during
+development) has no service to restart, so restart that process yourself after
+toggling a model.
 
 **Codex needs tool calling, and most local models do not have it.** Codex drives
 every turn through tool calls, so a model without them fails on its first
@@ -856,9 +1208,10 @@ at the top of the list. Download sizes come from Ollama's registry (refreshed
 weekly, cached, falling back to the checked-in figures offline), so they match
 what `ollama list` will show you.
 
-**Any other model.** The curated list is short on purpose, but it is not a
-cage: the tray's Local LLMs section has a field that accepts any Ollama tag —
-including `hf.co/user/repo:Q4_K_M` — and the CLI takes one too.
+**Any other model.** The checked-in tag snapshot is refreshed separately from
+Ollama, but it is not a cage: the tray's Local LLMs section has a field that
+accepts any Ollama tag — including `hf.co/user/repo:Q4_K_M` — and the CLI takes
+one too.
 
 ```sh
 ./bin/control vision-bridge pull minicpm-v
@@ -890,6 +1243,214 @@ How the local path differs from a paid engine:
   a paid vision engine still reads better; the local option is about cost and
   privacy, not peak quality.
 
+### Keep working when a provider runs out of usage
+
+A coding-plan window closes, a weekly quota lands, a balance empties — and the
+turn you were in the middle of used to stop there. Codex can do nothing with a
+billing error, so the session ended, subagents included, while every other model
+you had configured sat unused.
+
+Now the turn is **rebuilt for the next eligible model and sent again**. You get
+one clean answer. It is **on by default**, and it only ever uses models you have
+already enabled and credentialed.
+
+```sh
+./bin/control failover status
+./bin/control failover off      # a provider running out ends the turn, as before
+```
+
+Turning it off is remembered permanently; an update never turns it back on.
+
+**What counts as running out** is deliberately narrow: an exhausted balance or
+plan limit, a `402`, or a `429` that asks you to wait more than a minute.
+Everything else keeps the error it always gave — a rejected key still says the
+key was rejected, an unknown model still says so, and a provider outage is still
+reported rather than hidden. Swapping models to dodge a bad credential would
+only bury the one fact that fixes it.
+
+**Which model answers instead**, in order:
+
+1. Free models — the anonymous gateways, if you have curated any
+2. Everything else you have enabled, in the picker's own preference order
+
+**A free first stop is not automatic, and that is deliberate.** The free
+catalogs at `opencode-free` and `kilo-free` are picked out by naming rules their
+vendors change without notice, so none are checked in, and an anonymous provider
+is never enabled for you — turning one on sends your prompts to a third-party
+endpoint with no credential, which has to be your choice. Until you make it,
+failover goes straight to your own providers. `doctor` says which of the two
+you are in. To give failover a free first stop:
+
+```sh
+./bin/providers enable opencode-free
+./bin/model-router codex curate-models opencode-free
+```
+
+A model served from your own machine is never chosen automatically, for the same
+reason the vision bridge does not choose one: your runtime might not be running.
+Name it in a chain and it is used. A model whose context window cannot hold the
+conversation is skipped, so a quota failure never turns into a "too many tokens"
+failure. Choose the order yourself, or hand the choice back:
+
+```sh
+./bin/control failover chain opencode-free/big-pickle,kimi-api/kimi-k3
+./bin/control failover auto
+```
+
+**When a provider tells you when it will be back, that is believed.** The next
+turn skips it outright instead of paying for the same rejection again, and it
+starts being used the moment the window passes — or the next time it answers
+successfully, whichever comes first. Reset times are never invented, only read
+from the provider, and capped at six hours. `doctor` shows anything currently
+being held off and when it clears:
+
+```sh
+./bin/control failover reset   # clear every hold now and ask again next turn
+```
+
+**You are never left guessing which model answered.** The tray Island names the
+model actually serving, `router.log` records every swap (even with the quiet
+flag the background service sets), and the usage graphs mark the turn with the
+model you originally asked for. Nothing is written into your transcript — Codex
+replays assistant output back as input, so a note from the router would come
+back next turn as a sentence the model thinks it wrote.
+
+Compaction gets the same treatment: a compaction that cannot run ends a long
+session just as surely as a turn that cannot run.
+
+Note: your signed-in ChatGPT plan is **not** currently used as a fallback tier.
+Routed models fall back to other routed models only.
+
+## Make models appear in DeepSeek Harness
+
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`)
+reads its provider routes from `$DSH_HOME/settings.yaml`, which it watches and
+hot-reloads. Its shipped bundle mounts the generic `dsh-llm-pi-ai` adapter
+*dormant* — zero routes until a settings section supplies some — so publishing
+every routed model into it is a settings write, not a plugin or composition
+change.
+
+```sh
+./install.sh --target dsh --auto --providers configured
+# or, on an install that already serves Codex:
+./bin/model-router dsh enable
+```
+
+That writes one route, `llm-pi-ai.providers.codex-router`, and one credential
+reference, `CODEX_ROUTER_CALLER_KEY`, into `$DSH_HOME/.credentials.yaml`:
+
+```yaml
+llm-pi-ai:
+  providers:
+    codex-router:
+      displayName: "Codex Router"
+      api: "openai-responses"
+      baseURL: "http://127.0.0.1:4202/_codex-router/…/v1"
+      apiKeyEnv: "CODEX_ROUTER_CALLER_KEY"
+      models:
+        - id: "deepseek/deepseek-v4-pro"
+          name: "DeepSeek V4 Pro (API)"
+          contextWindow: 1048576
+          input:
+            - "text"
+          reasoningEfforts:
+            high: "high"
+            max: "max"
+```
+
+Nothing needs restarting: the harness picks the route up on its next request,
+and every model appears in its Models page with the context window, image
+support, and reasoning efforts the registry records.
+
+**What you keep.** The route points at the same endpoint Codex uses, so a
+harness turn goes through the same routed request path and gets the same
+router capabilities: tool-result ageing, the vision bridge for text-only
+models, the substituted prompt-token count that keeps compaction working
+against providers that report zero, bounded upstream retries, and the usage
+and tokens-per-second accounting behind `./bin/model-router codex control
+provider-usage --json`.
+
+**What is preserved.** The router owns that one route and that one credential
+and nothing else. Other provider routes, other settings sections, your
+comments, and your other stored keys are left exactly as they were —
+`./bin/model-router dsh disable` removes the route and restores the document.
+A settings file this build cannot read unambiguously is refused with the file
+untouched rather than rewritten on a guess.
+
+**Native GPT models publish while this machine has a usable Codex session.**
+They are authorized by a ChatGPT session and a harness request carries none of
+its own, so the router falls back to the session Codex is already signed in with
+here — you are logged in on this machine, and a client running as the same user
+should not have to log in again. They are withheld the moment that session is
+missing or expired, so the picker never offers a turn that would 401. If they
+disappear, open Codex once to renew it; `./bin/model-router doctor` says so too.
+
+It is a fallback and never an override: a request that presents its own
+credential is relayed untouched, so nothing about a Codex turn changes. Worth
+knowing before leaving it on — it widens what the caller key reaches, from the
+API-key providers to your ChatGPT subscription as well. Set
+`CODEX_ROUTER_NATIVE_SESSION_FALLBACK=0` to turn it off, and the harness
+publishes routed models only.
+
+**Subagents.** A child spawned by `dsh-tool-subagent` with no model of its own
+inherits the default model selection, so it is already routed once this route
+is the default. To put children on a *different* routed model, paste the block
+from `./bin/model-router dsh subagent-preset` into your preset's
+`agent.cordis.yml` — the router will not edit a preset it does not own.
+
+## Make models appear in Gemini CLI
+
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`) speaks only
+the Gemini API, so the router serves it one: a Gemini-shaped endpoint that
+translates each turn into the same Responses request Codex makes and answers
+with the same models. Google ships no bring-your-own-provider setting, but the
+CLI does read its endpoint, its credential, and its default model from the
+environment — which is the whole integration.
+
+```sh
+./install.sh --target gemini --auto --providers configured
+# or, on an install that already serves Codex:
+./bin/model-router gemini enable
+```
+
+That writes one marker block into `~/.gemini/.env`:
+
+```sh
+# BEGIN codex-router-gemini
+GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:4202/_codex-router/<caller-key>/gemini
+GEMINI_API_KEY=<caller-key>
+GEMINI_MODEL=anthropic/claude-opus-4-6
+# END codex-router-gemini
+```
+
+The next `gemini` run picks it up — there is nothing to restart. If the CLI asks
+how to authenticate, choose **Use Gemini API key** once; the key is this
+router's local caller capability, not a Google one, and it never leaves the
+machine.
+
+**What is preserved.** Your `settings.json` is never opened for writing: it is
+JSONC and carries your comments, and this integration does not need it. Every
+other line of `~/.gemini/.env` is left exactly as it was, and
+`./bin/model-router gemini disable` removes the block and restores the file. An
+assignment of one of those three keys *outside* the block stops the publish with
+the line named rather than being silently overwritten — `dotenv` lets the last
+assignment win, so a duplicate would quietly decide which endpoint is in force.
+
+**Picking a model.** `--model vendor/slug` overrides the published default for
+one run; `GEMINI_MODEL` in the block is the default for the rest. Pass
+`--no-default-model` to `src/gemini-config-manager.mjs install` to leave the key
+out entirely, in which case the CLI falls back to its own Gemini default — which
+this router does not route, so a turn without `--model` will be refused by name.
+
+**What is not served.** Embeddings (`:embedContent`) are refused with a named
+501: no routed provider exposes an embedding endpoint through the router, and a
+fabricated vector would be worse than an error. `:countTokens` is answered from
+a byte-count estimate rather than by spending a real turn upstream.
+
+**Native GPT models** publish here under the same rule as the harness, described
+above: while this machine has a usable Codex session, and withheld the moment it
+does not.
+
 ## macOS tray control panel
 
 On macOS, build and open the native menu-bar control panel with:
@@ -906,13 +1467,19 @@ the Settings tab's **Start at login** toggle or System Settings › Login Items
 turns that off, and the choice is never re-applied behind your back. A
 **Show tray** setting can additionally tie every tray surface to the Codex
 and ChatGPT desktop apps, appearing when they launch and hiding when they
-quit. See the [macOS tray guide](docs/MACOS-TRAY.md) for behavior and
+quit. In **With Codex** mode the endpoint starts with either app and stops only
+after both remain closed for 30 seconds and active requests have drained. A
+periodic process recheck backs up workspace notifications so a missed launch
+cannot strand Codex without its endpoint. **Always** keeps it continuously on.
+See the [macOS tray guide](docs/MACOS-TRAY.md) for behavior and
 rebuild notes.
 
-The app also places a Dynamic-Island-style overlay at the top center of the
+The app can also place a Dynamic-Island-style overlay at the top center of the
 active display. It follows the provider handling the latest request, reveals
-usage on hover, and expands on click. The menu-bar panel remains available for
-the all-provider overview and configuration.
+usage on hover, and expands on click. It is off on a new install; enable it
+under **Dynamic Island** in the tray Settings. The menu-bar panel is the
+primary surface for the all-provider overview and configuration, and stays
+available whether or not the overlay is on.
 
 ## Windows and Linux tray control panel
 
@@ -927,10 +1494,21 @@ surface.
 ```
 
 ```powershell
-# Windows PowerShell
+# Windows PowerShell -- build, launch, and start at logon
+.\install.ps1 -CheckoutInstall -WithTray
+
+# or build and launch it by hand
 .\scripts\build-desktop-tray.ps1 -BinaryOnly
 Start-Process .\apps\desktop\src-tauri\target\release\codex-router-desktop.exe
 ```
+
+Or skip the build entirely: every release attaches
+`codex-router-tray-<version>-windows-x64.exe`, and every CI run publishes the
+same binary as an artifact. Windows already ships the WebView2 runtime it
+needs.
+
+Windows 11 hides new tray icons in the `^` overflow next to the clock; drag the
+icon onto the taskbar to pin it.
 
 Windows and Linux on X11 receive the floating top-center activity pill. Linux
 on Wayland uses the tray panel without the pill because the compositor owns
@@ -990,10 +1568,33 @@ specific bytes. Browser and computer-use execution remains live-only.
 ./bin/model-router codex setup --guided
 ./bin/model-router codex doctor
 ./bin/model-router codex status
+./bin/model-router codex start
+./bin/model-router codex stop
 ./bin/model-router codex disable
 ./bin/model-router codex enable
 ./bin/model-router codex uninstall
 ./bin/control vision-bridge status
+./bin/control failover status
+```
+
+Every command takes `dsh` in place of `codex` to act on the DeepSeek Harness
+integration instead:
+
+```sh
+./bin/model-router dsh enable            # publish the routed models
+./bin/model-router dsh doctor
+./bin/model-router dsh status
+./bin/model-router dsh subagent-preset   # block to paste for a routed child model
+./bin/model-router dsh disable           # remove the route, keep everything else
+```
+
+…or `gemini` to act on the Gemini CLI integration:
+
+```sh
+./bin/model-router gemini enable         # publish the routed models
+./bin/model-router gemini doctor
+./bin/model-router gemini status
+./bin/model-router gemini disable        # remove the managed block, keep the rest
 ```
 
 The optional live check makes one small request per selected provider and may
@@ -1033,9 +1634,9 @@ and GitHub build-provenance attestations.
 
 ```mermaid
 flowchart LR
-  C["Codex Responses :4102"] --> L1["LiteLLM :4100"]
-  L1 --> K1["Kimi OAuth :4101"]
-  L1 --> A1["API keys :4103"]
+  C["Codex Responses :4202"] --> L1["LiteLLM :4200"]
+  L1 --> K1["Kimi OAuth :4201"]
+  L1 --> A1["API keys :4203"]
   K1 --> P["External providers"]
   A1 --> P
 ```
@@ -1083,6 +1684,7 @@ streaming, image-input, tool-call, and context behavior are verified. See
 - [Architecture and request flow](docs/HOW-IT-WORKS.md)
 - [Security and credential handling](SECURITY.md)
 - [Provider development and tests](docs/DEVELOPMENT.md)
+- [Verifying the Devin CLI provider](docs/DEVIN-CLI-PROBE.md)
 - [Changelog](CHANGELOG.md)
 
 References: [Kimi Code CLI OAuth](https://www.kimi.com/help/kimi-code/cli-getting-started),

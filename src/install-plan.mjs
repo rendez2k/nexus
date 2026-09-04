@@ -7,7 +7,7 @@
 // `.venv/`), so deleting the artifact invalidates the stamp automatically and
 // no state directory has to stay in sync with the checkout.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +123,20 @@ function venvPythonVersion(root) {
   return match ? match[1] : "unknown";
 }
 
+// The venv records the base interpreter it was created from. If that
+// directory was cleared -- macOS periodically wipes /private/tmp, and an
+// installer that recorded a temporary Python as the venv home leaves the
+// interpreter dangling after reboot -- the venv is unusable even when
+// `.venv/bin/python` still resolves through a copied binary. Treat an
+// unresolvable home as "not installed" so every install/update rebuilds it.
+export function venvPythonHomeUsable(root = SOURCE_ROOT) {
+  const config = readFile(path.join(root, ".venv", "pyvenv.cfg")) || "";
+  const match = config.match(/^\s*home\s*=\s*(.+)$/m);
+  if (!match) return true; // unknown; the interpreter probe decides
+  const home = match[1].trim();
+  return existsSync(home);
+}
+
 // The companion is one bundle per user, not one per checkout: a `dist/` target
 // inside the repository produces a separate tray for every clone and leaves
 // launchd pointing at whichever one installed last.
@@ -138,10 +152,12 @@ function sourceFilesIn(dir, extensions) {
   }
 }
 
-// trayDecision offers the companion on macOS *and* Linux, so both need a
-// staleness answer here. Covering only macOS would leave Linux users with the
-// exact drift this gating exists to stop: a companion built once and never
-// rebuilt, running against router code it no longer matches.
+// trayDecision offers the companion on macOS, Linux *and* Windows, so all
+// three need a staleness answer here. Covering only some would leave the rest
+// with the exact drift this gating exists to stop: a companion built once and
+// never rebuilt, running against router code it no longer matches. Windows was
+// the gap -- recordTrayBuild() threw there, so the one platform whose tray has
+// to be built deliberately was also the one that never recorded having been.
 const TRAY_PLATFORMS = {
   darwin: {
     sources: (root) => {
@@ -154,7 +170,9 @@ const TRAY_PLATFORMS = {
     },
     artifact: (root, home) =>
       path.join(trayBundleDir("darwin", home), "Contents", "MacOS", "ModelRouterTray"),
-    stamp: (root, home) => path.join(trayBundleDir("darwin", home), "Contents", STAMP_NAME),
+    // The source fingerprint is mutable router state, not an app resource.
+    // Keeping it inside Contents would invalidate the completed bundle seal.
+    stamp: (root, home) => path.join(home, ".codex", "codex-router", "tray-build.json"),
     // Companions built before the per-user move live inside the checkout.
     legacy: (root) =>
       path.join(root, "dist", "Model Router.app", "Contents", "MacOS", "ModelRouterTray"),
@@ -175,6 +193,23 @@ const TRAY_PLATFORMS = {
     // stamp sits beside it, so deleting the build tree invalidates both.
     artifact: (root) =>
       path.join(root, "apps", "desktop", "src-tauri", "target", "release", "codex-router-desktop"),
+    stamp: (root) =>
+      path.join(root, "apps", "desktop", "src-tauri", "target", "release", STAMP_NAME),
+  },
+  // Same Tauri project as Linux, same in-place build; only the artifact
+  // extension differs.
+  win32: {
+    sources: (root) => TRAY_PLATFORMS.linux.sources(root),
+    artifact: (root) =>
+      path.join(
+        root,
+        "apps",
+        "desktop",
+        "src-tauri",
+        "target",
+        "release",
+        "codex-router-desktop.exe",
+      ),
     stamp: (root) =>
       path.join(root, "apps", "desktop", "src-tauri", "target", "release", STAMP_NAME),
   },
@@ -220,6 +255,11 @@ export const STEPS = {
         ].join("\0"),
       ),
     installed: (root, platform) => {
+      // A venv whose interpreter home was cleared (macOS wipes /private/tmp,
+      // and installers that recorded a temporary Python as the venv home end
+      // up with a dangling interpreter) must read as "not installed" so the
+      // next install/update rebuilds it instead of skipping a broken venv.
+      if (!venvPythonHomeUsable(root)) return false;
       if (!existsSync(venvPython(root, platform))) return false;
       return PYTHON_REQUIREMENTS.every((requirement) => {
         const { name, version } = requirementParts(requirement);
@@ -269,10 +309,11 @@ export function recordTrayBuild({
   const definition = TRAY_PLATFORMS[platform];
   if (!definition) throw new Error(`The desktop companion is not built on ${platform}.`);
   const target = definition.stamp(root, home);
+  mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   writeFileSync(
     target,
     `${JSON.stringify({ version: 1, step: "tray", fingerprint: traySourceFingerprint(root, platform) }, null, 2)}\n`,
-    { encoding: "utf8" },
+    { encoding: "utf8", mode: 0o600 },
   );
   return target;
 }
@@ -497,6 +538,16 @@ function main(argv) {
     process.stdout.write(`${PYTHON_REQUIREMENTS.join("\n")}\n`);
     return 0;
   }
+  // `venv-home-ok` — 0/1 whether the recorded venv interpreter home still
+  // exists. The installers use this to decide whether a *present* venv must
+  // be cleared and recreated: `status python-deps` already returns "run" for
+  // a broken home, but the uv branch only recreates the venv when the python
+  // launcher itself is absent, so an existing-but-broken venv would otherwise
+  // be pip-installed into without ever rewriting pyvenv.cfg.
+  if (command === "venv-home-ok") {
+    process.stdout.write(venvPythonHomeUsable() ? "ok\n" : "damaged\n");
+    return venvPythonHomeUsable() ? 0 : 1;
+  }
   // `python-install-command <uv|pip> [posix|windows]` — what CI runs so that it
   // exercises the shipped installer's command rather than a copy of it.
   if (command === "python-install-command") {
@@ -505,7 +556,7 @@ function main(argv) {
   }
   console.error(
     "Usage: install-plan.mjs status|record <node-deps|python-deps> | tray-plan | record-tray | " +
-      "requirements | python-install-command <uv|pip> [posix|windows]",
+      "requirements | venv-home-ok | python-install-command <uv|pip> [posix|windows]",
   );
   return 2;
 }

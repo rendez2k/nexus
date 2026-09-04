@@ -163,7 +163,7 @@ test("an upstream body that fails mid-stream ends the chunked body instead of re
       // The router's top-level handler: log the cause, then terminate the
       // stream gracefully rather than destroying the socket.
       logged.push(
-        `[nexus] request failed: ${
+        `[codex-router] request failed: ${
           error instanceof Error ? `${error.name}: ${error.message}` : String(error)
         }`,
       );
@@ -184,7 +184,7 @@ test("an upstream body that fails mid-stream ends the chunked body instead of re
   );
   // The message is what made this diagnosable at all; the old handler logged a
   // bare string with no error attached.
-  assert.deepEqual(logged, ["[nexus] request failed: Error: upstream exploded"]);
+  assert.deepEqual(logged, ["[codex-router] request failed: Error: upstream exploded"]);
 
   assert.equal(result.aborted, false, "the socket was reset instead of ending the body");
   assert.equal(result.complete, true, "the chunked body never reached its terminator");
@@ -315,4 +315,49 @@ test("endStreamedResponse is a no-op on a finished or destroyed response", async
   await close(server);
 
   assert.equal(result.body, "data: done\n\n");
+});
+
+// A stream that dies after its head is committed can no longer change status,
+// so the terminal error event is the only place the cause can reach the user.
+// Codex reports a stream that just stops as `stream disconnected before
+// completion`, which names nothing.
+test("endStreamedResponse states a diagnosed cause instead of the generic one", async () => {
+  const server = http.createServer((request, response) => {
+    response.setHeader("content-type", "text/event-stream");
+    response.write("data: partial\n\n");
+    endStreamedResponse(response, {
+      message:
+        "The local router lost the upstream response stream: chatgpt.com reset the connection.",
+    });
+  });
+
+  const port = await listen(server);
+  const result = await readRaw(port);
+  await close(server);
+
+  assert.match(result.body, /event: error/);
+  const data = JSON.parse(result.body.slice(result.body.indexOf("{", result.body.indexOf("event: error"))));
+  // The code is the stable half a client may branch on; only the message
+  // gains the cause.
+  assert.equal(data.code, "local_router_stream_failed");
+  assert.equal(
+    data.message,
+    "The local router lost the upstream response stream: chatgpt.com reset the connection.",
+  );
+});
+
+test("endStreamedResponse keeps its generic wording when nothing was diagnosed", async () => {
+  const server = http.createServer((request, response) => {
+    response.setHeader("content-type", "text/event-stream");
+    response.write("data: partial\n\n");
+    endStreamedResponse(response, { message: undefined });
+  });
+
+  const port = await listen(server);
+  const result = await readRaw(port);
+  await close(server);
+
+  const data = JSON.parse(result.body.slice(result.body.indexOf("{", result.body.indexOf("event: error"))));
+  assert.equal(data.code, "local_router_stream_failed");
+  assert.match(data.message, /lost the upstream response stream/);
 });

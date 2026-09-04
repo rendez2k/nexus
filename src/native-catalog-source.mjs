@@ -35,48 +35,13 @@ const BASIC_STRING_ESCAPES = new Map([
   ["\\", "\\"],
 ]);
 
-// Length of the escape sequence starting at the backslash at `index`, or -1
-// when TOML defines no escape there.
-function escapeLength(body, index) {
-  const escape = body[index + 1];
-  if (escape === undefined) return -1;
-  if (BASIC_STRING_ESCAPES.has(escape)) return 2;
-  if (escape === "u" || escape === "U") {
-    const width = escape === "u" ? 4 : 8;
-    const digits = body.slice(index + 2, index + 2 + width);
-    if (digits.length === width && /^[0-9a-fA-F]+$/.test(digits)) {
-      return Number.parseInt(digits, 16) <= 0x10ffff ? 2 + width : -1;
-    }
-  }
-  return -1;
-}
-
 // TOML basic strings are not JSON strings: TOML adds `\UXXXXXXXX`, and Windows
 // users routinely write an unescaped native path (`"C:\Users\me\models.json"`).
 // JSON.parse rejects both and the caller reads a rejected value as "no catalog
 // configured" — the one answer that clears migration to run over an
-// installation the router does not own.
-//
-// Decoding escape-by-escape cannot serve both readings, because `\r` is a TOML
-// escape *and* the start of a great many Windows profile paths: `C:\Users\rob`
-// silently becomes a carriage return, and the router then fails to recognize
-// the catalog on every machine whose next segment starts with b, f, n, r, or t.
-// Validity separates most of them: a correctly escaped basic string spells
-// every backslash as an escape TOML defines, while a literal native path almost
-// always carries one it does not (`C:\Users\...` holds `\U`, which requires
-// eight hex digits). That alone cannot settle `D:\temp\new`, where every
-// backslash happens to spell a real escape, so the result decides the rest.
-// The two keys read through here are a filesystem path and a URL, and neither
-// can contain a control character -- which is precisely what `\t`, `\n`, `\b`,
-// `\f` and `\r` decode to. A decoded control character therefore means the
-// backslashes were always meant literally.
+// installation the router does not own. So decode the escapes TOML defines and
+// leave any other backslash standing as itself.
 function decodeBasicString(body) {
-  for (let index = 0; index < body.length; index += 1) {
-    if (body[index] !== "\\") continue;
-    const length = escapeLength(body, index);
-    if (length === -1) return body;
-    index += length - 1;
-  }
   let decoded = "";
   for (let index = 0; index < body.length; index += 1) {
     const char = body[index];
@@ -85,23 +50,27 @@ function decodeBasicString(body) {
       continue;
     }
     const escape = body[index + 1];
-    const simple = BASIC_STRING_ESCAPES.get(escape);
+    const simple = escape === undefined ? undefined : BASIC_STRING_ESCAPES.get(escape);
     if (simple !== undefined) {
       decoded += simple;
       index += 1;
       continue;
     }
-    const width = escape === "u" ? 4 : 8;
-    decoded += String.fromCodePoint(
-      Number.parseInt(body.slice(index + 2, index + 2 + width), 16),
-    );
-    index += 1 + width;
+    if (escape === "u" || escape === "U") {
+      const width = escape === "u" ? 4 : 8;
+      const digits = body.slice(index + 2, index + 2 + width);
+      const code = /^[0-9a-fA-F]+$/.test(digits) && digits.length === width
+        ? Number.parseInt(digits, 16)
+        : Number.NaN;
+      if (code <= 0x10ffff) {
+        decoded += String.fromCodePoint(code);
+        index += 1 + width;
+        continue;
+      }
+    }
+    decoded += char;
   }
-  const decodedAControlCharacter = [...decoded].some((character) => {
-    const code = character.codePointAt(0);
-    return code < 0x20 || code === 0x7f;
-  });
-  return decodedAControlCharacter ? body : decoded;
+  return decoded;
 }
 
 export function readRootStringValues(contents, key) {

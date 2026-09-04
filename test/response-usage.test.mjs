@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   estimateInputTokens,
+  mergeTokenUsage,
   normalizeTokenUsage,
   ResponseUsageTransform,
   substituteZeroInputUsage,
@@ -32,6 +33,76 @@ test("normalizes Responses and Chat Completions token usage", () => {
     tokenUsageFromPayload({ usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 } }),
     { inputTokens: 9, outputTokens: 4, totalTokens: 13 },
   );
+  assert.deepEqual(
+    normalizeTokenUsage({
+      prompt_tokens: 10,
+      completion_tokens: 4,
+      total_tokens: 14,
+      retries: 1,
+      progress_only_retried: true,
+      billed_prompt_tokens: 21,
+      billed_completion_tokens: 9,
+    }),
+    {
+      inputTokens: 10,
+      outputTokens: 4,
+      totalTokens: 14,
+      retries: 1,
+      progressOnlyRetried: true,
+      billedInputTokens: 21,
+      billedOutputTokens: 9,
+    },
+  );
+});
+
+test("captures provider-reported prefix-cache hits when they exist", () => {
+  // OpenAI-compatible shape: cached prefix inside input_tokens_details.
+  assert.deepEqual(
+    normalizeTokenUsage({
+      input_tokens: 100,
+      output_tokens: 5,
+      input_tokens_details: { cached_tokens: 90 },
+    }),
+    { inputTokens: 100, outputTokens: 5, totalTokens: 105, cachedInputTokens: 90 },
+  );
+  // Chat-completions shape used by DeepSeek-style APIs.
+  assert.deepEqual(
+    tokenUsageFromPayload({
+      usage: { prompt_tokens: 100, completion_tokens: 5, prompt_cache_hit_tokens: 80 },
+    }),
+    { inputTokens: 100, outputTokens: 5, totalTokens: 105, cachedInputTokens: 80 },
+  );
+  // A provider that reports no cache fields stays unchanged: the key is
+  // absent, not zero, so old rows keep their exact shape.
+  assert.deepEqual(
+    normalizeTokenUsage({ input_tokens: 3, output_tokens: 1 }),
+    { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+  );
+});
+
+test("adds up the usage of two attempts at one turn", () => {
+  assert.deepEqual(
+    mergeTokenUsage(
+      { inputTokens: 100, outputTokens: 0, totalTokens: 100 },
+      { inputTokens: 100, outputTokens: 5, totalTokens: 105 },
+    ),
+    { inputTokens: 200, outputTokens: 5, totalTokens: 205 },
+  );
+  // A cache count reported by either attempt survives the merge; reported by
+  // neither, the key stays absent rather than becoming a zero.
+  assert.deepEqual(
+    mergeTokenUsage(
+      { inputTokens: 10, outputTokens: 1, totalTokens: 11 },
+      { inputTokens: 10, outputTokens: 1, totalTokens: 11, cachedInputTokens: 8 },
+    ),
+    { inputTokens: 20, outputTokens: 2, totalTokens: 22, cachedInputTokens: 8 },
+  );
+  // One-sided merges are the ordinary case: an attempt whose provider reported
+  // nothing must not erase the one that did.
+  const only = { inputTokens: 3, outputTokens: 1, totalTokens: 4 };
+  assert.deepEqual(mergeTokenUsage(undefined, only), only);
+  assert.deepEqual(mergeTokenUsage(only, undefined), only);
+  assert.equal(mergeTokenUsage(undefined, undefined), undefined);
 });
 
 test("captures final SSE usage without changing streamed bytes", async () => {
@@ -47,6 +118,8 @@ test("captures final SSE usage without changing streamed bytes", async () => {
     outputTokens: 8,
     totalTokens: 29,
   });
+  assert.equal(transform.completedResponseObserved(), true);
+  assert.equal(typeof transform.firstTokenAt(), "number");
 });
 
 test("captures JSON usage without changing the response", async () => {
@@ -416,6 +489,28 @@ test("meters a headerless stream whose first event spans two chunks", async () =
   });
 });
 
+test("meters headerless SSE after a split BOM, comments, and blank lines", async () => {
+  const body = Buffer.from(
+    `\uFEFF: keepalive\r\n\r\n\n${completedEvent({
+      input_tokens: 17,
+      output_tokens: 4,
+      total_tokens: 21,
+    })}data: [DONE]\n\n`,
+    "utf8",
+  );
+  const transform = new ResponseUsageTransform("");
+  const output = await passThrough(
+    transform,
+    [...body].map((byte) => Buffer.from([byte])),
+  );
+  assert.equal(output, body.toString("utf8"));
+  assert.deepEqual(transform.tokenUsage(), {
+    inputTokens: 17,
+    outputTokens: 4,
+    totalTokens: 21,
+  });
+});
+
 test("still reads a headerless body as JSON when it is not an event stream", async () => {
   const body = JSON.stringify({ usage: { input_tokens: 7, output_tokens: 3 } });
   const transform = new ResponseUsageTransform("");
@@ -449,4 +544,171 @@ test("substitutes an estimated prompt count on a headerless stream", async () =>
   const output = await passThrough(transform, [Buffer.from(body, "utf8")]);
   assert.match(output, /"input_tokens":1200/);
   assert.equal(transform.substitutedInputTokens(), 1200);
+});
+
+// Issue #266: on a curated OpenRouter model the substituted estimate came in
+// 3.9x-4.7x above the true prompt count, which pushed every zero-report turn
+// past the compaction threshold and compacted the session on every turn.
+// `estimateInputTokens` was measuring the whole serialized body, and the body a
+// Codex session sends is mostly `encrypted_content` -- reasoning ciphertext no
+// routed provider reads. The reporter's figures: ~382 KB of body over ~29,551
+// real prompt tokens, about 12.9 real bytes per token against a divisor of 3.3.
+
+// A reasoning item as Codex replays one: a short visible summary and a large
+// opaque ciphertext blob.
+function reasoningItem(summary, ciphertextBytes) {
+  return {
+    type: "reasoning",
+    id: "rs_1",
+    summary: [{ type: "summary_text", text: summary }],
+    encrypted_content: `gAAAAAB${"x".repeat(ciphertextBytes)}`,
+  };
+}
+
+test("reasoning ciphertext is not counted as prompt tokens", () => {
+  // Same conversation twice: once as the provider stores it, once with the
+  // ciphertext stripped. The model reads the same words either way, so the two
+  // must estimate the same.
+  const visible = { type: "message", role: "user", content: [{ type: "input_text", text: "x".repeat(40_000) }] };
+  const withCiphertext = Buffer.from(
+    JSON.stringify({ model: "m", input: [visible, reasoningItem("Thinking about it.", 300_000)] }),
+    "utf8",
+  );
+  const withoutCiphertext = Buffer.from(
+    JSON.stringify({
+      model: "m",
+      input: [visible, { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "Thinking about it." }] }],
+    }),
+    "utf8",
+  );
+  // The ciphertext is nearly 90% of the stored body.
+  assert.ok(withCiphertext.byteLength > withoutCiphertext.byteLength * 8);
+  const stored = estimateInputTokens(withCiphertext);
+  const stripped = estimateInputTokens(withoutCiphertext);
+  // Before the fix `stored` was over 90,000 against `stripped` of about 12,000.
+  assert.ok(
+    Math.abs(stored - stripped) <= 40,
+    `ciphertext changed the estimate: ${stored} vs ${stripped}`,
+  );
+});
+
+test("a body that is mostly reasoning ciphertext does not force a compaction", () => {
+  // The reporter's shape: a conversation Codex is nowhere near needing to
+  // compact, inside a body three quarters ciphertext. autoCompact is 85% of the
+  // window, so the estimate has to stay under that or the session compacts on
+  // every turn that the provider reports as zero.
+  const contextWindow = 131_072;
+  const autoCompact = Math.floor(contextWindow * 0.85);
+  const input = [];
+  for (let turn = 0; turn < 24; turn += 1) {
+    input.push({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: `turn ${turn}: ${"word ".repeat(800)}` }],
+    });
+    input.push(reasoningItem(`Turn ${turn} reasoning summary.`, 12_000));
+  }
+  const body = Buffer.from(JSON.stringify({ model: "m", input }), "utf8");
+  // Roughly the reporter's proportions: a body whose real prompt content is a
+  // small fraction of its bytes.
+  assert.ok(body.byteLength > 380_000, `body was ${body.byteLength} bytes`);
+  const wholeBody = Math.ceil(body.byteLength / 3.3);
+  assert.ok(wholeBody > autoCompact, "the pre-fix estimate must clear the threshold");
+  const estimate = estimateInputTokens(body, { contextWindow });
+  assert.ok(
+    estimate < autoCompact,
+    `estimate ${estimate} still forces compaction at ${autoCompact}`,
+  );
+  // And it is not merely small: the visible half of the conversation is still
+  // counted in full.
+  assert.ok(estimate > 25_000, `estimate ${estimate} lost the visible text too`);
+});
+
+test("only the ciphertext is discounted, never the text beside it", () => {
+  // `encrypted_content` is also the name of a content-part type, and it appears
+  // as a value right next to the key. Discounting the value would silently drop
+  // real text; the scan keys on the colon that only follows the key.
+  const body = JSON.stringify({
+    input: [
+      {
+        type: "agent_message",
+        content: [
+          { type: "encrypted_content", encrypted_content: "gAAAA" + "z".repeat(50_000) },
+          { type: "input_text", text: "y".repeat(20_000) },
+        ],
+      },
+    ],
+  });
+  const estimate = estimateInputTokens(body);
+  const visibleOnly = estimateInputTokens(
+    JSON.stringify({
+      input: [
+        {
+          type: "agent_message",
+          content: [
+            { type: "encrypted_content", encrypted_content: "" },
+            { type: "input_text", text: "y".repeat(20_000) },
+          ],
+        },
+      ],
+    }),
+  );
+  assert.ok(Math.abs(estimate - visibleOnly) <= 4, `${estimate} vs ${visibleOnly}`);
+  // A tool result that quotes this very JSON is text, not a key, and every
+  // quote inside it is escaped -- so it must not be discounted.
+  const quoted = JSON.stringify({
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: `here is the payload: {"encrypted_content":"${"q".repeat(40_000)}"}` },
+        ],
+      },
+    ],
+  });
+  assert.ok(
+    estimateInputTokens(quoted) > 12_000,
+    "escaped text was mistaken for a key and discounted",
+  );
+});
+
+test("a non-JSON body is still counted whole", () => {
+  // A compressed frame or any other opaque payload finds no key to discount and
+  // is measured exactly as it always was. Erring high is the safe direction, so
+  // an unparseable body must never estimate low.
+  const opaque = Buffer.alloc(64_000, 0x9c);
+  assert.equal(estimateInputTokens(opaque), Math.ceil(64_000 / 3.3));
+});
+
+test("a ciphertext value carrying escapes ends where JSON says it ends", () => {
+  // Base64 has no quotes in it, but nothing stops a provider putting something
+  // else under the key. Stopping at an escaped quote would end the value early
+  // and discount the rest of the body as if it were ciphertext; running past
+  // the real closing quote would discount the visible text after it. Neither
+  // shows up as a wrong-looking number on its own, so the assertion is
+  // invariance: what the model reads is the same either way, so the estimate
+  // has to be too.
+  const visible = (awkward) =>
+    JSON.stringify({
+      input: [
+        { type: "reasoning", encrypted_content: awkward + "q".repeat(20_000) },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "z".repeat(30_000) }],
+        },
+      ],
+    });
+  const baseline = estimateInputTokens(visible(""));
+  // The trailing text dominates, so the estimate has to be near it rather than
+  // near the 15,000 tokens the ciphertext would have added.
+  assert.ok(baseline > 9_000 && baseline < 9_300, `baseline was ${baseline}`);
+  for (const awkward of ['a"b', "a\\", 'a\\"b', '\\\\"', "line\nbreak", '"']) {
+    assert.equal(
+      estimateInputTokens(visible(awkward)),
+      baseline,
+      `escape ${JSON.stringify(awkward)} moved the estimate`,
+    );
+  }
 });

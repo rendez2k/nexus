@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  contextLengthFailure,
   extractUpstreamDetail,
+  gatewayErrorStatus,
   translateGatewayError,
 } from "../src/error-translation.mjs";
 
@@ -35,6 +37,52 @@ test("extractUpstreamDetail falls back to truncated raw text for non-JSON bodies
 test("extractUpstreamDetail returns empty string for empty bodies", () => {
   assert.equal(extractUpstreamDetail(""), "");
   assert.equal(extractUpstreamDetail(undefined), "");
+});
+
+test("an Ollama MLX context rejection becomes a non-retryable context error", () => {
+  const bodyText = JSON.stringify({
+    error: {
+      message:
+        "litellm.APIConnectionError: APIConnectionError: OllamaException - input length (269931 tokens) exceeds the model's maximum context length (262144 tokens). LiteLLM Retried: 2 times",
+      type: null,
+      code: "500",
+    },
+  });
+
+  assert.deepEqual(contextLengthFailure(bodyText), {
+    detail:
+      "input length (269931 tokens) exceeds the model's maximum context length (262144 tokens). LiteLLM Retried: 2 times",
+    inputTokens: 269931,
+    maximumTokens: 262144,
+  });
+  assert.equal(gatewayErrorStatus({ status: 500, bodyText }), 400);
+
+  const payload = translateGatewayError({
+    status: 500,
+    bodyText,
+    modelName: "Qwen3.8 27B MLX (local)",
+    providerName: "Ollama",
+  });
+  assert.equal(payload.error.type, "invalid_request_error");
+  assert.equal(payload.error.param, "input");
+  assert.equal(payload.error.code, "context_length_exceeded");
+  assert.match(payload.error.message, /269,931 tokens/);
+  assert.match(payload.error.message, /262,144-token context window/);
+  assert.match(payload.error.message, /not high demand/);
+  assert.doesNotMatch(payload.error.message, /LiteLLM|APIConnectionError/);
+});
+
+test("ordinary Ollama-style 500 errors remain retryable server errors", () => {
+  const bodyText = JSON.stringify({ error: { message: "mlx runner stopped unexpectedly" } });
+  assert.equal(gatewayErrorStatus({ status: 500, bodyText }), 500);
+  const payload = translateGatewayError({
+    status: 500,
+    bodyText,
+    modelName: "Qwen3.8 27B MLX (local)",
+    providerName: "Ollama",
+  });
+  assert.equal(payload.error.type, "server_error");
+  assert.equal(payload.error.code, "500");
 });
 
 test("a 5xx names the provider and keeps the upstream detail", () => {
@@ -414,46 +462,47 @@ test("a genuine 403 credential rejection still says so", () => {
   assert.match(translated.error.message, /rejected the stored credentials/);
 });
 
-// The message that prompted this: OpenRouter gates some models behind an
-// account setting and answers with 403. Reporting that as rejected credentials
-// sends people to re-enter a key that was never the problem.
-test("a required account action is not reported as a credential failure", () => {
+// Regression for #179. LiteLLM used to cool a deployment down on a 401 and
+// then answer with its own 429, so the user was told to wait out a rejected
+// credential. router_settings.disable_cooldowns (see litellm-config) stops that
+// at the source; this locks in that a real upstream 401 still classifies
+// correctly once it reaches the translator, and that a real 429 still does too.
+//
+// Deliberately no test for parsing a status out of LiteLLM's cooldown body:
+// _get_cooldown_deployments returns bare deployment ids (cooldown_handlers.py),
+// so the client-facing message carries no originating status to read.
+test("an upstream 401 is an auth failure, not a rate limit", () => {
   const translated = translateGatewayError({
-    status: 403,
-    bodyText: JSON.stringify({
-      error: {
-        message:
-          "This model requires you to complete the following before use: 18+ age confirmation. Confirm at https://openrouter.ai/settings/preferences.",
-      },
-    }),
-    modelName: "Muse Spark 1.2 (OpenRouter)",
-    providerName: "openrouter",
-    providerKind: "openai-compatible",
+    status: 401,
+    bodyText: JSON.stringify({ error: { message: "invalid api key" } }),
+    modelName: "kimi-k3",
+    providerName: "Kimi",
+    providerKind: "api",
   });
-  // Neither fix that would waste the operator's time may be suggested.
-  assert.doesNotMatch(translated.error.message, /rejected the stored credentials/);
-  assert.doesNotMatch(translated.error.message, /Re-run codex-router setup/);
-  assert.match(translated.error.message, /account/i);
-  // The upstream's own instruction is the thing to act on, so it has to survive
-  // into the message rather than be replaced by our summary.
-  assert.match(translated.error.message, /age confirmation/i);
+  assert.equal(translated.error.type, "authentication_error");
+  assert.match(translated.error.message, /Re-run codex-router setup/);
 });
 
-// The status alone cannot separate the two: the same 403 carries both a bad
-// key and an account gate, so the detail is what decides which advice is given.
-test("403 advice is chosen by the detail, not the status", () => {
-  const forModel = (message) =>
-    translateGatewayError({
-      status: 403,
-      bodyText: JSON.stringify({ error: { message } }),
-      modelName: "Grok 4.6 (OpenRouter)",
-      providerName: "openrouter",
-      providerKind: "openai-compatible",
-    }).error.message;
+test("an upstream 401 on an OAuth provider advises signing in again", () => {
+  const translated = translateGatewayError({
+    status: 401,
+    bodyText: JSON.stringify({ error: { message: "invalid session" } }),
+    modelName: "kimi-k3",
+    providerName: "Kimi",
+    providerKind: "oauth",
+  });
+  assert.equal(translated.error.type, "authentication_error");
+  assert.match(translated.error.message, /Sign in to Kimi again/);
+});
 
-  assert.match(forModel("Invalid API key provided"), /rejected the stored credentials/);
-  assert.doesNotMatch(
-    forModel("You must accept the terms of service before using this model."),
-    /rejected the stored credentials/,
-  );
+test("a genuine rate limit is still a rate limit", () => {
+  const translated = translateGatewayError({
+    status: 429,
+    bodyText: JSON.stringify({ error: { message: "rate limit exceeded" } }),
+    modelName: "kimi-k3",
+    providerName: "Kimi",
+    providerKind: "api",
+    retryAfterSeconds: 30,
+  });
+  assert.equal(translated.error.type, "rate_limit_error");
 });

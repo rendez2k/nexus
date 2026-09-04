@@ -16,11 +16,15 @@ process.env.MODEL_ROUTER_USER_MODELS = path.join(
 const { renderLiteLlmConfig } = await import("../src/litellm-config.mjs");
 const {
   API_MODELS,
+  anonymousModelAllowed,
+  endpointForModel,
   LISTED_MODELS,
   MODEL_BY_SLUG,
   MODELS,
   PROVIDERS,
+  providerNeedsNoKey,
   readRegistryDocument,
+  resolveProviderBaseUrl,
 } = await import("../src/model-registry.mjs");
 
 test("provider registry exposes configured API and OAuth model families", () => {
@@ -44,30 +48,47 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "clinepass/qwen3.8-max",
       "commandcode/deepseek-v4-flash",
       "commandcode/deepseek-v4-pro",
+      "commandcode/fugu-ultra",
       "commandcode/gemini-3.5-flash",
+      "commandcode/gemini-3.7-flash",
+      "commandcode/glm-5.2-fast",
       "commandcode/glm-5.2",
       "commandcode/gpt-5.5",
       "commandcode/gpt-5.6-luna",
+      "commandcode/gpt-5.6-sol",
+      "commandcode/gpt-5.6-terra",
       "commandcode/grok-4.5",
+      "commandcode/grok-4.6",
       "commandcode/hy3-paid",
+      "commandcode/inkling-small",
+      "commandcode/inkling",
+      "commandcode/kimi-k2.7-code-highspeed",
       "commandcode/kimi-k2.7-code",
       "commandcode/kimi-k3",
+      "commandcode/laguna-s-2.1",
       "commandcode-messages/claude-fable-5",
       "commandcode-messages/claude-haiku-4.5",
       "commandcode-messages/claude-opus-4.8",
+      "commandcode-messages/claude-opus-5",
       "commandcode-messages/claude-sonnet-5",
       "commandcode/mimo-v2.5-pro",
       "commandcode/minimax-m2.7",
       "commandcode/minimax-m3",
+      "commandcode/muse-spark-1.2",
+      "commandcode/nemotron-3-ultra",
+      "commandcode/qwen3.7-flash",
       "commandcode/qwen3.7-max",
       "commandcode/qwen3.7-plus",
       "commandcode/qwen3.8-max",
       "commandcode/step-3.7-flash",
+      "custom/qwen3.8-27b",
       "deepseek/deepseek-v4-flash",
       "deepseek/deepseek-v4-pro",
       "grok-api/grok-4.5",
       "grok-oauth/grok-4.5",
+      "grok-oauth/grok-4.6",
       "kimi-api/kimi-k3",
+      "kimi-api-cn/kimi-k3",
       "kimi-oauth/k3",
       "kimi-oauth/kimi-for-coding-highspeed",
       "kimi-oauth/kimi-for-coding",
@@ -84,6 +105,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go/deepseek-v4-pro",
       "opencode-go/glm-5.1",
       "opencode-go/glm-5.2",
+      "opencode-go/glm-5.3",
       "opencode-go/grok-4.5",
       "opencode-go/hy3",
       "opencode-go/kimi-k2.6",
@@ -98,6 +120,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go-messages/qwen3.7-plus",
       "opencode-go-messages/qwen3.8-max",
       "opencode-go-responses/gpt-5.6-luna",
+      "opencode-go-responses/muse-spark-1.2-contributor",
       "openrouter/deepseek-v4-flash",
       "openrouter/deepseek-v4-pro",
       "openrouter/grok-4.20-multi-agent",
@@ -112,6 +135,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "openrouter/qwen3.7-plus",
       "openrouter/qwen3.8-max",
       "qwen-plan/deepseek-v4-flash-0731",
+      "qwen-plan/deepseek-v4-pro-0813",
       "qwen-plan/deepseek-v4-pro",
       "qwen-plan/glm-5.2",
       "qwen-plan/qwen3.6-flash",
@@ -119,8 +143,14 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "qwen-plan/qwen3.7-plus",
       "qwen-plan/qwen3.8-max-preview",
       "qwen-plan/qwen3.8-max",
+      "xiaomi-mimo/mimo-v2.5-pro",
+      "xiaomi-mimo/mimo-v2.5",
+      "zai-api/glm-4.7",
+      "zai-api/glm-5.2",
+      "zai-api/glm-5.3",
       "zai-coding/glm-5-turbo",
       "zai-coding/glm-5.2",
+      "zai-coding/glm-5.3",
     ],
   );
   assert.equal(PROVIDERS.get("deepseek").baseUrl, "https://api.deepseek.com");
@@ -132,6 +162,33 @@ test("provider registry exposes configured API and OAuth model families", () => 
     PROVIDERS.get("zai-coding").baseUrl,
     "https://api.z.ai/api/coding/paas/v4",
   );
+  // The pay-per-token platform is its own endpoint, its own credential, and its
+  // own key file: a Coding Plan key is not billable on it.
+  assert.equal(PROVIDERS.get("zai-api").baseUrl, "https://api.z.ai/api/paas/v4");
+  assert.equal(PROVIDERS.get("zai-api").variantOf, undefined);
+  assert.equal(PROVIDERS.get("zai-api").credential.file, "zai-api-key.secret");
+  assert.notEqual(
+    PROVIDERS.get("zai-api").credential.file,
+    PROVIDERS.get("zai-coding").credential.file,
+  );
+  // Every channel the credential can arrive through has to be distinct, not
+  // just the file: the same check the China Kimi route gets below. A shared
+  // keychain service or base-URL variable would let one product's key satisfy
+  // the other's lookup, which is the whole failure this split exists to stop.
+  for (const field of ["environment", "keychainServices"]) {
+    const platform = PROVIDERS.get("zai-api").credential[field] || [];
+    const plan = new Set(PROVIDERS.get("zai-coding").credential[field] || []);
+    assert.ok(platform.length > 0, `zai-api declares no ${field}`);
+    assert.ok(
+      platform.every((entry) => !plan.has(entry)),
+      `zai-api ${field} must not overlap the Coding Plan`,
+    );
+  }
+  assert.notEqual(
+    PROVIDERS.get("zai-api").baseUrlEnv,
+    PROVIDERS.get("zai-coding").baseUrlEnv,
+  );
+  assert.ok(PROVIDERS.get("zai-api").planNote);
   assert.equal(PROVIDERS.get("ollama-cloud").baseUrl, "https://ollama.com/v1");
   assert.equal(PROVIDERS.get("minimax-token-plan").baseUrl, "https://api.minimax.io/v1");
   // Go is its own endpoint, not the pay-per-use Zen one.
@@ -143,6 +200,12 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(PROVIDERS.get("commandcode").baseUrl, "https://api.commandcode.ai/provider/v1");
   assert.equal(PROVIDERS.get("commandcode-messages").baseUrl, "https://api.commandcode.ai/provider/v1");
   assert.equal(PROVIDERS.get("commandcode-messages").protocol, "anthropic");
+  // Xiaomi's direct API is OpenAI-compatible chat, not the Responses gateway.
+  assert.equal(PROVIDERS.get("xiaomi-mimo").baseUrl, "https://api.xiaomimimo.com/v1");
+  assert.equal(PROVIDERS.get("xiaomi-mimo").baseUrlEnv, "XIAOMI_MIMO_API_BASE_URL");
+  assert.equal(PROVIDERS.get("xiaomi-mimo").protocol, "openai");
+  assert.deepEqual(PROVIDERS.get("xiaomi-mimo").credential.environment, ["MIMO_API_KEY"]);
+  assert.equal(PROVIDERS.get("xiaomi-mimo").credential.file, "xiaomi-mimo-api-key.secret");
   // The protocol variants are one selectable family: they declare the parent
   // whose credential and picker selection they follow.
   assert.equal(PROVIDERS.get("opencode-go").variantOf, undefined);
@@ -163,6 +226,39 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "COMMANDCODE_API_KEY",
   ]);
   assert.equal(PROVIDERS.get("grok-api").baseUrl, "https://api.x.ai/v1");
+  assert.equal(PROVIDERS.get("local").transport, "ollama");
+  assert.equal(PROVIDERS.get("lmstudio").baseUrl, "http://127.0.0.1:1234/v1");
+  assert.equal(PROVIDERS.get("lmstudio").baseUrlEnv, "MODEL_ROUTER_LMSTUDIO_BASE_URL");
+  // kimi-api is the global platform. The mainland one is its own provider
+  // below, not a KIMI_API_BASE_URL override of this one -- the override still
+  // works for a genuinely custom deployment, but pointing it at moonshot.cn
+  // would authenticate the wrong account's key against the wrong host.
+  assert.equal(PROVIDERS.get("kimi-api").baseUrl, "https://api.moonshot.ai/v1");
+  // Moonshot runs two platforms with separate accounts, separate billing, and
+  // keys each host rejects from the other. They must never collapse into one
+  // provider, and must never share a credential.
+  assert.equal(PROVIDERS.get("kimi-api-cn").baseUrl, "https://api.moonshot.cn/v1");
+  assert.notEqual(
+    PROVIDERS.get("kimi-api-cn").credential.file,
+    PROVIDERS.get("kimi-api").credential.file,
+  );
+  assert.notEqual(
+    PROVIDERS.get("kimi-api-cn").baseUrlEnv,
+    PROVIDERS.get("kimi-api").baseUrlEnv,
+  );
+  for (const field of ["environment", "keychainServices"]) {
+    const global = new Set(PROVIDERS.get("kimi-api").credential[field]);
+    const china = PROVIDERS.get("kimi-api-cn").credential[field];
+    assert.ok(
+      china.every((entry) => !global.has(entry)),
+      `kimi-api-cn ${field} must not overlap the global platform`,
+    );
+  }
+  // The China route has never been through the native collaboration probe
+  // AGENTS.md requires, so it stays conservative v1 while the global one is v2.
+  assert.equal(MODEL_BY_SLUG.get("kimi-api-cn/kimi-k3").multiAgentVersion, undefined);
+  assert.equal(MODEL_BY_SLUG.get("kimi-api/kimi-k3").multiAgentVersion, "v2");
+  assert.equal(MODEL_BY_SLUG.get("kimi-api-cn/kimi-k3").upstreamModel, "kimi-k3");
   assert.equal(PROVIDERS.get("github-copilot").authProfile, "github-copilot");
   assert.equal(PROVIDERS.get("github-copilot").protocol, "openai-responses");
   assert.deepEqual(PROVIDERS.get("github-copilot").credential.environment, [
@@ -170,6 +266,61 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "GH_TOKEN",
     "GITHUB_TOKEN",
   ]);
+  const chutes = PROVIDERS.get("chutes");
+  assert.equal(chutes.baseUrl, "https://llm.chutes.ai/v1");
+  assert.equal(chutes.baseUrlEnv, "CHUTES_API_BASE_URL");
+  assert.deepEqual(chutes.credential.environment, ["CHUTES_API_KEY"]);
+  assert.equal(chutes.credential.file, "chutes-api-key.secret");
+  assert.deepEqual(chutes.credential.keychainServices, ["codex-router-chutes"]);
+  assert.equal(LISTED_MODELS.some(({ provider }) => provider === "chutes"), false);
+  const opencodeFree = PROVIDERS.get("opencode-free");
+  assert.equal(opencodeFree.authMode, "anonymous");
+  assert.equal(opencodeFree.baseUrl, "https://opencode.ai/zen/v1");
+  assert.equal(opencodeFree.credential, undefined);
+  assert.equal(anonymousModelAllowed(opencodeFree, "big-pickle"), true);
+  assert.equal(anonymousModelAllowed(opencodeFree, "mimo-v2.5-free"), true);
+  assert.equal(anonymousModelAllowed(opencodeFree, "glm-5.1"), false);
+  const kiloFree = PROVIDERS.get("kilo-free");
+  assert.equal(kiloFree.authMode, "anonymous");
+  assert.equal(kiloFree.baseUrl, "https://api.kilo.ai/api/gateway");
+  assert.equal(anonymousModelAllowed(kiloFree, "z-ai/glm-5:free"), true);
+  assert.equal(anonymousModelAllowed(kiloFree, "z-ai/glm-5"), false);
+  // The `custom` provider is a container: it has no address, no credential, and
+  // nothing to authenticate, because each of its models carries all three.
+  const custom = PROVIDERS.get("custom");
+  assert.equal(custom.perModelEndpoint, true);
+  assert.equal(custom.authMode, "per-model");
+  assert.equal(custom.baseUrl, undefined);
+  assert.equal(custom.baseUrlEnv, undefined);
+  assert.equal(custom.credential, undefined);
+  assert.equal(providerNeedsNoKey(custom), true);
+  // Its first model names the free community endpoint and reaches it with no
+  // credential, so the address is the security boundary and lives in code.
+  const customModels = LISTED_MODELS.filter(({ provider }) => provider === "custom");
+  assert.deepEqual(
+    customModels.map(({ slug }) => slug),
+    ["custom/qwen3.8-27b"],
+  );
+  const [qwen38] = customModels;
+  assert.equal(
+    qwen38.endpoint.baseUrl,
+    "https://g9hnto0u7lvbu837.us-east-2.aws.endpoints.huggingface.cloud/v1",
+  );
+  assert.equal(qwen38.endpoint.authMode, "anonymous");
+  assert.equal(qwen38.endpoint.credential, undefined);
+  assert.equal(qwen38.endpoint.baseUrlEnv, undefined);
+  // Identity is derived from the model, never read from the fragment, so one
+  // model's credential file can never be pointed at another model's secret.
+  assert.equal(qwen38.endpoint.id, "custom/qwen3.8-27b");
+  assert.equal(qwen38.endpoint.kind, "openai-compatible");
+  assert.equal(endpointForModel(qwen38), qwen38.endpoint);
+  // Metadata verified against the live endpoint rather than guessed.
+  assert.equal(qwen38.contextWindow, 262144);
+  assert.deepEqual(qwen38.inputModalities, ["text", "image"]);
+  assert.equal(qwen38.requestProfile, "qwen38-community");
+  // Every other provider is its own endpoint, so the two answers coincide.
+  const deepseekModel = LISTED_MODELS.find(({ provider }) => provider === "deepseek");
+  assert.equal(endpointForModel(deepseekModel), PROVIDERS.get("deepseek"));
   const clinepass = PROVIDERS.get("clinepass");
   assert.equal(clinepass.baseUrl, "https://api.cline.bot/api/v1");
   assert.equal(clinepass.baseUrlEnv, "CLINE_API_BASE_URL");
@@ -237,10 +388,18 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "DASHSCOPE_API_KEY",
   ]);
   assert.equal(PROVIDERS.get("anthropic-api").protocol, "anthropic");
-  for (const model of LISTED_MODELS.filter(({ provider }) =>
-    /^(?:kimi|grok)-/.test(provider),
+  // Deliberate v1 holdouts. Both are unproven through the native collaboration
+  // probe AGENTS.md requires, and a v2 claim is not inherited from a sibling
+  // route: kimi-api-cn is the same model on a different platform, which is
+  // exactly the kind of "surely it also works" assumption the probe exists for.
+  const unprovenForV2 = new Set(["grok-oauth/grok-4.6", "kimi-api-cn/kimi-k3"]);
+  for (const model of LISTED_MODELS.filter(({ provider, slug }) =>
+    /^(?:kimi|grok)-/.test(provider) && !unprovenForV2.has(slug),
   )) {
     assert.equal(model.multiAgentVersion, "v2", model.slug);
+  }
+  for (const slug of unprovenForV2) {
+    assert.equal(MODEL_BY_SLUG.get(slug).multiAgentVersion, undefined, slug);
   }
   assert.equal(MODEL_BY_SLUG.get("deepseek/deepseek-v4-pro").multiAgentVersion, undefined);
   for (const slug of [
@@ -266,14 +425,19 @@ test("provider registry exposes configured API and OAuth model families", () => 
     assert.equal(k3.defaultEffort, "max", slug);
     assert.equal(k3.requestProfile, "kimi-k3", slug);
   }
-  // Hosted search is an xAI-backend behavior, so only the Grok OAuth slug may
-  // declare it; every other search-capable path waits on the router-side
-  // emulated executor.
-  assert.deepEqual(MODEL_BY_SLUG.get("grok-oauth/grok-4.5").searchTool, {
-    mode: "hosted",
-  });
+  // Hosted search is an xAI-backend behavior. Standalone search is limited to
+  // provider/model pairs verified against Codex's client-side replay path.
+  for (const slug of ["grok-oauth/grok-4.5", "grok-oauth/grok-4.6"]) {
+    assert.deepEqual(MODEL_BY_SLUG.get(slug).searchTool, { mode: "hosted" });
+  }
+  const standaloneSearchSlugs = new Set([
+    "deepseek/deepseek-v4-flash",
+    "opencode-go/deepseek-v4-flash",
+    "xiaomi-mimo/mimo-v2.5",
+    "zai-coding/glm-5.3",
+  ]);
   for (const model of MODELS) {
-    if (model.slug === "grok-oauth/grok-4.5") continue;
+    if (["grok-oauth/grok-4.5", "grok-oauth/grok-4.6"].includes(model.slug) || standaloneSearchSlugs.has(model.slug)) continue;
     assert.equal(model.searchTool, undefined, model.slug);
   }
   // Original-detail images are declared per slug on canonical vision
@@ -286,6 +450,8 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "anthropic-api/claude-opus-4.8",
     "grok-api/grok-4.5",
     "grok-oauth/grok-4.5",
+    "grok-oauth/grok-4.6",
+    "kimi-api-cn/kimi-k3",
     "kimi-api/kimi-k3",
     "kimi-oauth/k3",
     "kimi-oauth/kimi-for-coding",
@@ -295,6 +461,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "qwen-plan/qwen3.7-max",
     "qwen-plan/qwen3.8-max",
     "qwen-plan/qwen3.8-max-preview",
+    "xiaomi-mimo/mimo-v2.5",
   ]);
   for (const slug of originalDetailSlugs) {
     assert.ok(
@@ -318,6 +485,13 @@ test("provider registry exposes configured API and OAuth model families", () => 
     MODEL_BY_SLUG.get("commandcode-messages/claude-opus-4.8").contextWindow,
     1_000_000,
   );
+  // Command Code serves Haiku 4.5 only under its dated id. The undated alias
+  // every other Anthropic surface accepts is absent from this catalog, so the
+  // route 404s the moment the registry shortens it.
+  assert.equal(
+    MODEL_BY_SLUG.get("commandcode-messages/claude-haiku-4.5").upstreamModel,
+    "claude-haiku-4-5-20251001",
+  );
   // Documented output_config.effort ladder for Opus 4.8 (default high).
   assert.deepEqual(
     MODEL_BY_SLUG.get("anthropic-api/claude-opus-4.8").reasoningLevels.map((level) => level.effort),
@@ -328,6 +502,25 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(grok.contextWindow, 500_000);
   assert.deepEqual(grok.reasoningLevels.map((level) => level.effort), ["low", "medium", "high"]);
   assert.deepEqual(grok.inputModalities, ["text", "image"]);
+  const grok46 = MODEL_BY_SLUG.get("grok-oauth/grok-4.6");
+  assert.equal(grok46.contextWindow, 500_000);
+  assert.deepEqual(
+    grok46.reasoningLevels.map((level) => level.effort),
+    ["low", "medium", "high", "xhigh"],
+  );
+  assert.equal(grok46.defaultEffort, "high");
+  assert.deepEqual(grok46.inputModalities, ["text", "image"]);
+  for (const slug of [
+    "grok-oauth/grok-4.6",
+    "grok-oauth/grok-4.5",
+    "grok-api/grok-4.5",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-reasoner",
+  ]) {
+    assert.equal(MODEL_BY_SLUG.get(slug).supportsReasoningSummaries, true);
+  }
+  assert.equal(MODEL_BY_SLUG.get("deepseek/deepseek-chat").supportsReasoningSummaries, undefined);
   for (const slug of [
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-pro",
@@ -337,6 +530,34 @@ test("provider registry exposes configured API and OAuth model families", () => 
     assert.match(model.description, /DeepSeek V4/);
     assert.deepEqual(model.inputModalities, ["text"]);
   }
+});
+
+test("only checked-in Gemini reseller models opt into trailing model-turn trimming", () => {
+  assert.equal(
+    MODEL_BY_SLUG.get("commandcode/gemini-3.5-flash").requiresTrailingUserTurn,
+    true,
+  );
+  assert.equal(
+    MODEL_BY_SLUG.get("commandcode/gemini-3.7-flash").requiresTrailingUserTurn,
+    true,
+  );
+  assert.equal(MODEL_BY_SLUG.get("commandcode/gpt-5.5").requiresTrailingUserTurn, undefined);
+});
+
+test("DeepSeek V4 Flash routes opt in to Codex standalone web search", () => {
+  for (const slug of [
+    "deepseek/deepseek-v4-flash",
+    "opencode-go/deepseek-v4-flash",
+  ]) {
+    assert.deepEqual(MODEL_BY_SLUG.get(slug)?.searchTool, { mode: "standalone" }, slug);
+  }
+});
+
+test("GLM-5.3 Coding Plan opts in to GPT-5.6 behavior, concise execution, and standalone search", () => {
+  const model = MODEL_BY_SLUG.get("zai-coding/glm-5.3");
+  assert.equal(model?.behaviorTemplate, "gpt-5.6-sol");
+  assert.equal(model?.instructionOverlay, "efficient-agentic");
+  assert.deepEqual(model?.searchTool, { mode: "standalone" });
 });
 
 test("Meta models opt out of the apply_patch custom tool", () => {
@@ -350,6 +571,33 @@ test("Meta models opt out of the apply_patch custom tool", () => {
   assert.equal(MODEL_BY_SLUG.get("grok-oauth/grok-4.5").supportsApplyPatchTool, undefined);
 });
 
+test("official Xiaomi MiMo routes advertise only verified capabilities", () => {
+  const vlm = MODEL_BY_SLUG.get("xiaomi-mimo/mimo-v2.5");
+  const pro = MODEL_BY_SLUG.get("xiaomi-mimo/mimo-v2.5-pro");
+  for (const model of [pro, vlm]) {
+    assert.equal(model.contextWindow, 1_048_576);
+    // 900,000 is what every other million-token route in this registry
+    // compacts at, including the three other MiMo routes. The 95% this
+    // started at left ~52K of headroom on a window Codex is already told to
+    // treat as 95% effective, so a turn could grow past the limit before
+    // anything compacted it.
+    assert.equal(model.autoCompact, 900_000);
+    assert.equal(model.defaultEffort, "high");
+    assert.deepEqual(model.reasoningLevels, [
+      { effort: "high", description: "Deep reasoning" },
+    ]);
+    assert.equal(model.supportsReasoningSummaries, true);
+    assert.equal(model.supportsParallelToolCalls, false);
+    assert.deepEqual(model.experimentalSupportedTools, []);
+    assert.equal(model.supportsApplyPatchTool, false);
+  }
+  assert.deepEqual(pro.inputModalities, ["text"]);
+  assert.equal(pro.searchTool, undefined);
+  assert.deepEqual(vlm.inputModalities, ["text", "image"]);
+  assert.equal(vlm.supportsImageDetailOriginal, true);
+  assert.deepEqual(vlm.searchTool, { mode: "standalone" });
+});
+
 test("deprecated DeepSeek aliases remain routable but stay out of the picker", () => {
   for (const slug of [
     "deepseek/deepseek-chat",
@@ -359,73 +607,6 @@ test("deprecated DeepSeek aliases remain routable but stay out of the picker", (
     assert.ok(model);
     assert.equal(model.listed, false);
     assert.ok(API_MODELS.includes(model));
-  }
-});
-
-// OpenRouter reaches DeepSeek V4 as a reseller, so the restriction that matters
-// belongs to the upstream model and not to OpenRouter: DeepSeek refuses a forced
-// tool_choice while thinking, which is why these carry auto-tool-choice. They
-// must never borrow the native deepseek-thinking profile, whose `thinking`
-// parameter is DeepSeek's own and absent from OpenRouter's OpenAI-shaped
-// surface, and their upstream ids must stay OpenRouter's namespaced ids rather
-// than the bare ids the direct DeepSeek provider sends.
-// Each OpenRouter entry, mapped to the id OpenRouter itself publishes and to
-// the slug of the direct provider selling the same model. The direct slug is
-// what pins the priority ordering below; null means OpenRouter is the only way
-// this repository reaches the model, so there is nothing for it to outrank.
-const OPENROUTER_RESALE = new Map([
-  ["openrouter/deepseek-v4-flash", ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash"]],
-  ["openrouter/deepseek-v4-pro", ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro"]],
-  ["openrouter/grok-4.20", ["x-ai/grok-4.20", null]],
-  ["openrouter/grok-4.20-multi-agent", ["x-ai/grok-4.20-multi-agent", null]],
-  ["openrouter/grok-4.3", ["x-ai/grok-4.3", null]],
-  ["openrouter/grok-4.5", ["x-ai/grok-4.5", "grok-api/grok-4.5"]],
-  ["openrouter/grok-4.6", ["x-ai/grok-4.6", null]],
-  ["openrouter/grok-build-0.1", ["x-ai/grok-build-0.1", null]],
-  ["openrouter/muse-spark-1.1", ["meta/muse-spark-1.1", "meta/muse-spark-1.1"]],
-  ["openrouter/muse-spark-1.2", ["meta/muse-spark-1.2", "meta/muse-spark-1.2"]],
-  ["openrouter/qwen3.7-max", ["qwen/qwen3.7-max", "qwen-plan/qwen3.7-max"]],
-  ["openrouter/qwen3.7-plus", ["qwen/qwen3.7-plus", "qwen-plan/qwen3.7-plus"]],
-  ["openrouter/qwen3.8-max", ["qwen/qwen3.8-max", "qwen-plan/qwen3.8-max"]],
-]);
-
-test("OpenRouter models route as a reseller of the upstream model", () => {
-  const models = LISTED_MODELS.filter(({ provider }) => provider === "openrouter");
-  assert.deepEqual(
-    new Map(models.map(({ slug, upstreamModel }) => [slug, upstreamModel])),
-    new Map([...OPENROUTER_RESALE].map(([slug, [upstream]]) => [slug, upstream])),
-  );
-  for (const model of models) {
-    // OpenRouter presents one OpenAI-shaped surface for every model it resells,
-    // so none of these may borrow a native profile such as deepseek-thinking or
-    // xai-reasoning, whose parameters are absent from it.
-    assert.equal(model.requestProfile, "auto-tool-choice", model.slug);
-    assert.equal(model.defaultEffort, "high", model.slug);
-    // Text-only: OpenRouter's per-model image support is unconfirmed for these,
-    // and the vision bridge covers text-only models anyway.
-    assert.deepEqual(model.inputModalities, ["text"], model.slug);
-    // Unproven for native v2 collaboration, so conservative v1 behavior stands.
-    assert.equal(model.multiAgentVersion, undefined, model.slug);
-    // Upstream ids stay OpenRouter's namespaced ids, never the bare id the
-    // direct provider sends.
-    assert.ok(model.upstreamModel.includes("/"), model.slug);
-    // Direct entries hold the low priorities; a reseller must not outrank them
-    // and displace the picker's spawn-override subset. Where OpenRouter is the
-    // only route this repository has, there is no direct entry to rank against.
-    const directSlug = OPENROUTER_RESALE.get(model.slug)[1];
-    if (directSlug === null) continue;
-    const direct = MODEL_BY_SLUG.get(directSlug);
-    assert.ok(direct, `${model.slug} claims a direct counterpart ${directSlug} that is absent`);
-    assert.ok(model.priority > direct.priority, model.slug);
-  }
-});
-
-// A reseller advertising a larger window than it can serve silently truncates,
-// so these track what OpenRouter publishes rather than the direct provider's.
-test("OpenRouter context windows leave headroom before auto-compaction", () => {
-  for (const model of LISTED_MODELS.filter(({ provider }) => provider === "openrouter")) {
-    assert.ok(model.autoCompact < model.contextWindow, model.slug);
-    assert.ok(model.autoCompact >= model.contextWindow * 0.8, model.slug);
   }
 });
 
@@ -471,6 +652,15 @@ test("Ollama Cloud models advertise only levels the forwarder maps to Ollama", (
       );
     }
   }
+});
+
+// Every model_name has exactly one deployment, so a cooldown can only hide a
+// failure -- it turns a 401 into LiteLLM's own 429. See #179.
+test("the gateway config disables deployment cooldowns", () => {
+  const rendered = renderLiteLlmConfig();
+  assert.match(rendered, /router_settings:\n\s+disable_cooldowns: true/);
+  const names = [...rendered.matchAll(/^  - model_name: (.+)$/gm)].map((m) => m[1]);
+  assert.equal(new Set(names).size, names.length, "one deployment per model_name");
 });
 
 test("LiteLLM configuration is generated from every registry route", () => {
@@ -532,6 +722,32 @@ test("curated upgrade prompts point at listed generational successors", () => {
   );
 });
 
+test("instruction overlays must name a shipped overlay", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = (await import("node:path")).default;
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(path.join(tmpdir(), "registry-overlay-test-"));
+  try {
+    const registry = readRegistryDocument("config");
+    registry.models = [
+      { ...registry.models[0], instructionOverlay: "no-such-overlay" },
+      ...registry.models.slice(1),
+    ];
+    const registryPath = path.join(dir, "providers.json");
+    writeFileSync(registryPath, JSON.stringify(registry));
+    const result = spawnSync(
+      process.execPath,
+      ["-e", "import('./src/model-registry.mjs').catch((e)=>{console.error(e.message);process.exit(1);})"],
+      { encoding: "utf8", env: { ...process.env, MODEL_ROUTER_REGISTRY: registryPath } },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /invalid instructionOverlay/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // The router's vision bridge is what gives a text-only model images, so the
 // registry may only record an opt-out. A `true` would read as a capability the
 // model itself has, which is exactly the claim the bridge must never make.
@@ -556,6 +772,32 @@ test("visionBridge may only be set to false", async () => {
     );
     assert.equal(result.status, 1);
     assert.match(result.stderr, /may only set visionBridge to false/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("requiresTrailingUserTurn must be a boolean", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const path = (await import("node:path")).default;
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(path.join(tmpdir(), "registry-trailing-turn-test-"));
+  try {
+    const registry = readRegistryDocument("config");
+    registry.models = [
+      { ...registry.models[0], requiresTrailingUserTurn: "yes" },
+      ...registry.models.slice(1),
+    ];
+    const registryPath = path.join(dir, "providers.json");
+    writeFileSync(registryPath, JSON.stringify(registry));
+    const result = spawnSync(
+      process.execPath,
+      ["-e", "import('./src/model-registry.mjs').catch((e)=>{console.error(e.message);process.exit(1);})"],
+      { encoding: "utf8", env: { ...process.env, MODEL_ROUTER_REGISTRY: registryPath } },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /invalid requiresTrailingUserTurn flag/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -623,6 +865,31 @@ test("serviceTiers require unique non-empty ids and names", async () => {
   }
 });
 
+test("isFree is a boolean model tag", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const nodePath = (await import("node:path")).default;
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(nodePath.join(tmpdir(), "registry-free-tag-test-"));
+  const load = (isFree) => {
+    const registry = readRegistryDocument("config");
+    registry.models = [{ ...registry.models[0], isFree }, ...registry.models.slice(1)];
+    const registryPath = nodePath.join(dir, "providers.json");
+    writeFileSync(registryPath, JSON.stringify(registry));
+    return spawnSync(
+      process.execPath,
+      ["-e", "import('./src/model-registry.mjs').catch((e)=>{console.error(e.message);process.exit(1);})"],
+      { encoding: "utf8", env: { ...process.env, MODEL_ROUTER_REGISTRY: registryPath } },
+    );
+  };
+  try {
+    assert.match(load("yes").stderr, /invalid isFree flag/);
+    assert.equal(load(true).status, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // A keyless provider skips the credential requirement, which is only safe
 // because it cannot reach off-box. Both halves of that bargain are enforced.
 test("a keyless provider must be loopback and must not carry a credential", async () => {
@@ -662,6 +929,142 @@ test("a keyless provider must be loopback and must not carry a credential", asyn
     });
     assert.equal(keyed.status, 1);
     assert.match(keyed.stderr, /must not declare a credential/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("credential-free endpoints are allowlisted addresses, at the provider and at the model", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const nodePath = (await import("node:path")).default;
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(nodePath.join(tmpdir(), "registry-anonymous-test-"));
+  const load = (mutate) => {
+    const registry = readRegistryDocument("config");
+    mutate(registry);
+    const registryPath = nodePath.join(dir, "providers.json");
+    writeFileSync(registryPath, JSON.stringify(registry));
+    return spawnSync(
+      process.execPath,
+      ["-e", "import('./src/model-registry.mjs').catch((e)=>{console.error(e.message);process.exit(1);})"],
+      { encoding: "utf8", env: { ...process.env, MODEL_ROUTER_REGISTRY: registryPath } },
+    );
+  };
+  try {
+    const redirected = load((registry) => {
+      registry.providers = registry.providers.map((provider) =>
+        provider.id === "opencode-free"
+          ? { ...provider, baseUrl: "https://example.com/v1" }
+          : provider,
+      );
+    });
+    assert.equal(redirected.status, 1);
+    assert.match(redirected.stderr, /anonymous provider opencode-free must use its fixed official endpoint/);
+
+    const keyed = load((registry) => {
+      registry.providers = registry.providers.map((provider) =>
+        provider.id === "kilo-free"
+          ? { ...provider, credential: { file: "unexpected.secret", environment: [] } }
+          : provider,
+      );
+    });
+    assert.equal(keyed.status, 1);
+    assert.match(keyed.stderr, /anonymous provider kilo-free must not declare keyless or credential metadata/);
+
+    // Everything below is the same guarantee one level down. A per-model
+    // endpoint moves the address out of the provider and into the model, so a
+    // JSON fragment is the thing that must not be able to widen it.
+    const customModel = (mutate) => (registry) => {
+      registry.models = registry.models.map((model) =>
+        model.provider === "custom" ? mutate(model) : model,
+      );
+    };
+
+    // The address is the security boundary for a credential-free endpoint, so
+    // it is allowlisted in code and a fragment cannot repoint it.
+    const redirectedModel = load(customModel((model) => ({
+      ...model,
+      endpoint: { ...model.endpoint, baseUrl: "https://example.com/v1" },
+    })));
+    assert.equal(redirectedModel.status, 1);
+    assert.match(
+      redirectedModel.stderr,
+      /model custom\/qwen3\.8-27b anonymous endpoint must use its allowlisted address/,
+    );
+
+    // An environment override would walk straight around that allowlist.
+    const overridden = load(customModel((model) => ({
+      ...model,
+      endpoint: { ...model.endpoint, baseUrlEnv: "CUSTOM_BASE_URL" },
+    })));
+    assert.equal(overridden.status, 1);
+    assert.match(
+      overridden.stderr,
+      /must not allow a baseUrl override without a credential/,
+    );
+
+    // Exactly one auth story per endpoint: two would leave a silent winner.
+    const doubled = load(customModel((model) => ({
+      ...model,
+      endpoint: {
+        ...model.endpoint,
+        credential: { file: "custom.secret", environment: ["CUSTOM_API_KEY"] },
+      },
+    })));
+    assert.equal(doubled.status, 1);
+    assert.match(
+      doubled.stderr,
+      /must declare exactly one of anonymous, keyless, or credential/,
+    );
+
+    // The keyless rule is about the address, not the flag: an endpoint that
+    // sends no credential may only talk to this machine.
+    const offBox = load(customModel((model) => ({
+      ...model,
+      endpoint: { baseUrl: "https://example.com/v1", keyless: true },
+    })));
+    assert.equal(offBox.status, 1);
+    assert.match(offBox.stderr, /keyless endpoint must use a loopback baseUrl/);
+
+    // Identity is derived from the model. A fragment that set it could point
+    // one model's credential file at another model's secret.
+    const forged = load(customModel((model) => ({
+      ...model,
+      endpoint: { ...model.endpoint, id: "deepseek" },
+    })));
+    assert.equal(forged.status, 1);
+    assert.match(forged.stderr, /endpoint must not declare id or kind/);
+
+    // A container has no address of its own; two answers to "where does this
+    // go" would have a silent winner.
+    const addressedContainer = load((registry) => {
+      registry.providers = registry.providers.map((provider) =>
+        provider.id === "custom"
+          ? { ...provider, baseUrl: "https://example.com/v1" }
+          : provider,
+      );
+    });
+    assert.equal(addressedContainer.status, 1);
+    assert.match(
+      addressedContainer.stderr,
+      /per-model-endpoint provider custom must not declare baseUrl/,
+    );
+
+    // And the reverse: an endpoint on a provider that already is one would be
+    // silently ignored today and quietly obeyed after any future refactor.
+    const strayEndpoint = load((registry) => {
+      registry.models = registry.models.map((model) =>
+        model.provider === "deepseek"
+          ? { ...model, endpoint: { baseUrl: "https://example.com/v1" } }
+          : model,
+      );
+    });
+    assert.equal(strayEndpoint.status, 1);
+    assert.match(
+      strayEndpoint.stderr,
+      /declares an endpoint but deepseek is not a per-model-endpoint provider/,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -725,6 +1128,73 @@ test("local models route with Ollama's native protocol and a bounded context", (
   const rendered = renderLiteLlmConfig();
   const openAiRoutes = rendered.match(/model: "openai\/local-[^"]+"/g);
   assert.equal(openAiRoutes, null, "a local model must not use the OpenAI-compatible surface");
+  for (const block of rendered.matchAll(/model: "ollama_chat\/[^"]+"([\s\S]*?)(?=\n\s*- model_name:|\nlitellm_settings:)/g)) {
+    assert.match(
+      block[1],
+      /num_retries: 0/,
+      "a deterministic local rejection must not be repeated inside LiteLLM",
+    );
+  }
   // Every non-local model keeps the forwarder path untouched.
   assert.match(rendered, /model: "openai\/deepseek-v4-pro"/);
+});
+
+test("a keyless provider's baseUrl override must stay on loopback", () => {
+  const local = PROVIDERS.get("local");
+  assert.ok(local?.keyless, "the local provider is the keyless reference case");
+
+  // The loader only proves the checked-in URL; the override arrives at request
+  // time. A non-loopback override on a keyless provider is refused in favor of
+  // the registry URL, because a keyless request carries no credential.
+  const refused = resolveProviderBaseUrl(local, {
+    [local.baseUrlEnv]: "https://attacker.example/v1",
+  });
+  assert.equal(refused.baseUrl, String(local.baseUrl).replace(/\/+$/, ""));
+  assert.equal(refused.refusedOverride, "https://attacker.example/v1");
+
+  // A loopback override is the supported way to move the local port.
+  const moved = resolveProviderBaseUrl(local, {
+    [local.baseUrlEnv]: "http://127.0.0.1:11435/v1",
+  });
+  assert.equal(moved.baseUrl, "http://127.0.0.1:11435/v1");
+  assert.equal(moved.refusedOverride, undefined);
+
+  // A credentialed provider keeps its override: the request authenticates
+  // itself, so pointing it elsewhere is configuration, not a leak.
+  const deepseek = PROVIDERS.get("deepseek");
+  assert.ok(deepseek && !deepseek.keyless);
+  const overridden = resolveProviderBaseUrl(deepseek, {
+    [deepseek.baseUrlEnv]: "https://proxy.example/v1/",
+  });
+  assert.equal(overridden.baseUrl, "https://proxy.example/v1");
+  assert.equal(overridden.refusedOverride, undefined);
+});
+
+test("opencode's DeepSeek models never receive a forced tool_choice", () => {
+  // Console Go serves DeepSeek V4 in thinking mode, which answers HTTP 400 to
+  // tool_choice "required" ("Thinking mode does not support this tool_choice")
+  // while calling tools correctly under "auto" — both halves observed live on
+  // 2026-08-15. Per AGENTS.md that is exactly the per-model auto-tool-choice
+  // case: the restriction belongs to the upstream behind the reseller, so the
+  // router downgrades the forced choice for these two slugs and no others.
+  for (const slug of [
+    "opencode-go/deepseek-v4-flash",
+    "opencode-go/deepseek-v4-pro",
+    // Same class, observed 2026-08-15 in the full sweep: 400 on required
+    // (Kimi K2.7 Code on the chat route; the four Qwens on the messages
+    // route answer a bare {"model": ...} echo), clean probe calls under auto.
+    "opencode-go/kimi-k2.7-code",
+    "opencode-go-messages/qwen3.6-plus",
+    "opencode-go-messages/qwen3.7-max",
+    "opencode-go-messages/qwen3.7-plus",
+    "opencode-go-messages/qwen3.8-max",
+  ]) {
+    assert.equal(MODEL_BY_SLUG.get(slug).requestProfile, "auto-tool-choice", slug);
+  }
+  // The sibling opencode routes keep their defaults: the probe proved nothing
+  // about them, and a provider-wide default is what the rule forbids. (kimi-k3
+  // carries its own effort profile, so it is not a clean control here.)
+  for (const slug of ["opencode-go/glm-5.3", "opencode-go/grok-4.5", "opencode-go/mimo-v2.5"]) {
+    assert.equal(MODEL_BY_SLUG.get(slug).requestProfile, undefined, slug);
+  }
 });

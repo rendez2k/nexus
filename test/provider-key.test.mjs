@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+const root = path.resolve(import.meta.dirname, "..");
 
 // provider-key.mjs is a CLI entry that validates process.argv at module
 // evaluation time (and exits when the arguments are missing), so give it a
@@ -14,13 +16,8 @@ const savedArgv = [...process.argv];
 const savedEnvKey = process.env.OPENCODE_GO_API_KEY;
 process.argv = [process.argv[0], "provider-key.mjs", "opencode-go", "status"];
 process.env.OPENCODE_GO_API_KEY = "test-only-placeholder";
-const {
-  WINDOWS_HIDDEN_PROMPT_SCRIPT,
-  WINDOWS_VISIBLE_PROMPT_SCRIPT,
-  powerShellStartupError,
-  windowsHiddenPromptArgs,
-  windowsPromptArgs,
-} = await import("../src/provider-key.mjs");
+const { WINDOWS_HIDDEN_PROMPT_SCRIPT, powerShellStartupError, windowsHiddenPromptArgs } =
+  await import("../src/provider-key.mjs");
 // Lives in provider-onboarding so doctor and the providers CLI can ask the
 // same question; provider-key.mjs exits on import when argv is not a command.
 const { providerNeedsCuration } = await import("../src/provider-onboarding.mjs");
@@ -58,36 +55,6 @@ test("a missing PowerShell candidate never masks the real prompt failure", () =>
   const noneInstalled = powerShellStartupError([missing, missing]);
   assert.equal(noneInstalled.code, undefined);
   assert.match(noneInstalled.message, /PowerShell is required/);
-
-  // The confirmation prompt reports through the same helper, so the message
-  // has to name which prompt failed rather than always claiming key input.
-  assert.match(
-    powerShellStartupError([missing, missing], "interactive confirmation").message,
-    /PowerShell is required for interactive confirmation/,
-  );
-});
-
-test("the Windows confirmation prompt is passed as an encoded command", () => {
-  // The visible prompt spent a release on -Command while only the hidden one
-  // was repaired; it depends on the same [Console]::/parenthesis punctuation
-  // that the Windows command-line parser is free to mangle.
-  const args = windowsPromptArgs(WINDOWS_VISIBLE_PROMPT_SCRIPT);
-  assert.equal(args.includes("-Command"), false);
-  const encodedIndex = args.indexOf("-EncodedCommand");
-  assert.ok(encodedIndex >= 0);
-  assert.equal(
-    Buffer.from(args[encodedIndex + 1], "base64").toString("utf16le"),
-    WINDOWS_VISIBLE_PROMPT_SCRIPT,
-  );
-});
-
-test("both Windows prompts share one argument builder", () => {
-  // Drift between the two builders is what let the confirmation prompt keep a
-  // -Command path of its own, so pin them to the same implementation.
-  assert.deepEqual(
-    windowsHiddenPromptArgs(),
-    windowsPromptArgs(WINDOWS_HIDDEN_PROMPT_SCRIPT),
-  );
 });
 
 test("the Windows hidden prompt is passed as an encoded command", () => {
@@ -125,6 +92,99 @@ test(
         encoding: "utf8",
         stdio: ["ignore", "pipe", "inherit"],
       });
+    } finally {
+      rmSync(testRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "the POSIX hidden prompt captures a key without echoing it",
+  {
+    skip:
+      process.platform === "win32" ||
+      spawnSync("python3", ["--version"], { stdio: "ignore" }).status !== 0,
+  },
+  () => {
+    const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-posix-prompt-"));
+    const secret = "test-value";
+    const helper = String.raw`
+import errno
+import os
+import select
+import sys
+import termios
+import time
+
+node, provider_key, home, state_dir, secret = sys.argv[1:]
+env = os.environ.copy()
+env.update({
+    "HOME": home,
+    "CODEX_HOME": home,
+    "CODEX_ROUTER_STATE_DIR": state_dir,
+    "MODEL_ROUTER_STATE_DIR": state_dir,
+})
+pid, master = os.forkpty()
+if pid == 0:
+    os.execve(node, [node, provider_key, "deepseek", "set"], env)
+
+output = bytearray()
+prompt = b"DeepSeek API key: "
+sent = False
+while True:
+    ready, _, _ = select.select([master], [], [], 10)
+    if not ready:
+        os.kill(pid, 9)
+        raise SystemExit("timed out waiting for provider-key")
+    try:
+        chunk = os.read(master, 4096)
+    except OSError as error:
+        if error.errno == errno.EIO:
+            break
+        raise
+    if not chunk:
+        break
+    output.extend(chunk)
+    if not sent and prompt in output:
+        deadline = time.monotonic() + 2
+        while termios.tcgetattr(master)[3] & termios.ECHO:
+            if time.monotonic() >= deadline:
+                os.kill(pid, 9)
+                raise SystemExit("provider-key did not disable terminal echo")
+            time.sleep(0.01)
+        os.write(master, secret.encode() + b"\n")
+        sent = True
+
+_, status = os.waitpid(pid, 0)
+os.close(master)
+sys.stdout.buffer.write(output)
+raise SystemExit(os.waitstatus_to_exitcode(status))
+`;
+    try {
+      const result = spawnSync(
+        "python3",
+        [
+          "-c",
+          helper,
+          process.execPath,
+          path.join(root, "src", "provider-key.mjs"),
+          testRoot,
+          path.join(testRoot, "router state"),
+          secret,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            DEEPSEEK_API_KEY: "",
+          },
+          timeout: 20_000,
+        },
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /Received \d+ characters\./);
+      assert.match(result.stdout, /DeepSeek API key saved to protected local storage/);
+      assert.doesNotMatch(result.stdout, new RegExp(secret));
     } finally {
       rmSync(testRoot, { recursive: true, force: true });
     }

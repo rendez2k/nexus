@@ -20,9 +20,13 @@ test("routed agent definitions select the router provider and exact model slug",
   const definition = routedAgentDefinition(kimi);
   assert.equal(definition.agentName, "router_kimi_oauth_k3");
   assert.equal(definition.fileName, "router-model-kimi-oauth-k3.toml");
-  assert.match(definition.contents, /^# Managed by Nexus\./);
+  assert.match(definition.contents, /^# Managed by Codex Router\./);
   assert.match(definition.contents, /model_provider = "codex-router"/);
   assert.match(definition.contents, /model = "kimi-oauth\/k3"/);
+  assert.match(definition.contents, /cite the exact file and line/);
+  assert.match(definition.contents, /Before claiming that something is absent/);
+  assert.match(definition.contents, /Never invent or reuse a stale name/);
+  assert.match(definition.contents, /Do not stop after merely announcing a next action/);
 });
 
 test("agent sync writes one private definition for every routed model", () => {
@@ -108,26 +112,24 @@ test("an install with every model switched off is a clean state", () => {
   assert.equal(status.ok, true);
 });
 
-test("only an explicit switch off withholds a definition", () => {
+test("only registry-proven models receive routed agent definitions", () => {
   const models = [
-    { slug: "kimi-oauth/k3" },
-    { slug: "grok-oauth/grok-4.5" },
+    { slug: "kimi-oauth/k3", multiAgentVersion: "v2" },
+    { slug: "grok-oauth/grok-4.5", multiAgentVersion: "v2" },
     { slug: "deepseek/deepseek-v4-flash" },
   ];
-  // Settings that name nothing leave every model eligible, which is what an
-  // install that has never opened the subagent settings looks like.
   assert.deepEqual(
     subagentEligibleModels(models, { mode: "proven", enabled: [], disabled: [] }).map(
       ({ slug }) => slug,
     ),
-    ["kimi-oauth/k3", "grok-oauth/grok-4.5", "deepseek/deepseek-v4-flash"],
+    ["kimi-oauth/k3", "grok-oauth/grok-4.5"],
   );
   assert.deepEqual(
     subagentEligibleModels(models, {
       mode: "all",
       enabled: [],
-      disabled: ["deepseek/deepseek-v4-flash"],
+      disabled: ["grok-oauth/grok-4.5"],
     }).map(({ slug }) => slug),
-    ["kimi-oauth/k3", "grok-oauth/grok-4.5"],
+    ["kimi-oauth/k3"],
   );
 });

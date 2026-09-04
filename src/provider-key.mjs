@@ -10,11 +10,13 @@ import {
 } from "./provider-credentials.mjs";
 import { providerNeedsCuration, removeApiCredential } from "./provider-onboarding.mjs";
 import { enableProvider } from "./provider-selection.mjs";
+import { withModelOverlayLock } from "./model-overlay-lock.mjs";
 import { secretEntryFeedback, secretEntryProblem } from "./secret-entry.mjs";
 import {
   refreshTargetPickerIfInstalled,
   targetCli,
   targetPickerName,
+  targetRestartHint,
 } from "./target-integration.mjs";
 
 const providerId = process.argv[2];
@@ -39,18 +41,11 @@ export const WINDOWS_HIDDEN_PROMPT_SCRIPT = [
   "try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }",
 ].join("; ");
 
-// The confirmation prompt runs the same gauntlet as the hidden one: it is a
-// PowerShell script handed to a Windows command line, where [Console], :: and
-// the nested parentheses are all punctuation that layer can mangle. It reads an
-// answer rather than a key, so it needs no SecureString.
-export const WINDOWS_VISIBLE_PROMPT_SCRIPT =
-  "[Console]::Out.Write((Read-Host $env:CODEX_ROUTER_PROMPT_LABEL))";
-
 // A -Command argument is re-parsed by the Windows command-line quoting rules
-// before PowerShell ever sees it, so the punctuation these prompts depend on is
+// before PowerShell ever sees it, so the punctuation this prompt depends on is
 // at the mercy of that layer. -EncodedCommand carries the script as base64
 // UTF-16LE and skips the parsing entirely.
-export function windowsPromptArgs(script) {
+export function windowsHiddenPromptArgs(script = WINDOWS_HIDDEN_PROMPT_SCRIPT) {
   return [
     "-NoLogo",
     "-NoProfile",
@@ -59,49 +54,36 @@ export function windowsPromptArgs(script) {
   ];
 }
 
-export function windowsHiddenPromptArgs(script = WINDOWS_HIDDEN_PROMPT_SCRIPT) {
-  return windowsPromptArgs(script);
-}
-
 const WINDOWS_POWERSHELL_CANDIDATES = ["powershell.exe", "pwsh.exe"];
 
 // A candidate that is not installed explains nothing about why the prompt
 // failed, and pwsh.exe is absent on a stock Windows box. Keeping the last
 // error used to bury the real powershell.exe failure under that ENOENT.
-export function powerShellStartupError(failures, purpose = "hidden API-key input") {
+export function powerShellStartupError(failures) {
   return (
     failures.find((error) => error?.code !== "ENOENT") ||
     new Error(
-      `PowerShell is required for ${purpose}, but neither powershell.exe nor pwsh.exe could be started.`,
+      "PowerShell is required for hidden API-key input, but neither powershell.exe nor pwsh.exe could be started.",
     )
   );
 }
 
-// Both Windows prompts try the same candidates in the same order and report
-// failure the same way; only the script and the named purpose differ. Keeping
-// one implementation is what stops the confirmation prompt from drifting back
-// to -Command and a masked ENOENT, which is where it sat while the hidden
-// prompt alone was repaired.
-function runWindowsPrompt(label, script, purpose) {
-  const args = windowsPromptArgs(script);
-  const failures = [];
-  for (const executable of WINDOWS_POWERSHELL_CANDIDATES) {
-    try {
-      return execFileSync(executable, args, {
-        encoding: "utf8",
-        env: { ...process.env, CODEX_ROUTER_PROMPT_LABEL: label },
-        stdio: ["inherit", "pipe", "inherit"],
-      });
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  throw powerShellStartupError(failures, purpose);
-}
-
 function hiddenPrompt(label) {
   if (process.platform === "win32") {
-    return runWindowsPrompt(label, WINDOWS_HIDDEN_PROMPT_SCRIPT, "hidden API-key input");
+    const args = windowsHiddenPromptArgs();
+    const failures = [];
+    for (const executable of WINDOWS_POWERSHELL_CANDIDATES) {
+      try {
+        return execFileSync(executable, args, {
+          encoding: "utf8",
+          env: { ...process.env, CODEX_ROUTER_PROMPT_LABEL: label },
+          stdio: ["inherit", "pipe", "inherit"],
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    throw powerShellStartupError(failures);
   }
   let descriptor;
   try {
@@ -169,11 +151,24 @@ function hiddenPrompt(label) {
 
 function visiblePrompt(label) {
   if (process.platform === "win32") {
-    return runWindowsPrompt(
-      label,
-      WINDOWS_VISIBLE_PROMPT_SCRIPT,
-      "interactive confirmation",
-    );
+    const script = "[Console]::Out.Write((Read-Host $env:CODEX_ROUTER_PROMPT_LABEL))";
+    let lastError;
+    for (const executable of ["powershell.exe", "pwsh.exe"]) {
+      try {
+        return execFileSync(
+          executable,
+          ["-NoLogo", "-NoProfile", "-Command", script],
+          {
+            encoding: "utf8",
+            env: { ...process.env, CODEX_ROUTER_PROMPT_LABEL: label },
+            stdio: ["inherit", "pipe", "inherit"],
+          },
+        );
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("PowerShell is required for interactive confirmation.");
   }
   let descriptor;
   try {
@@ -242,12 +237,19 @@ if (command === "status") {
   if (!status.configured) process.exitCode = 1;
 } else if (command === "set") {
   const value = promptForKey(provider.credential.prompt || `${provider.displayName} API key`);
-  const target = writeProviderCredential(provider, value);
-  enableProvider(provider.id);
-  const refreshed = refreshTargetPickerIfInstalled();
+  let target;
+  let refreshed;
+  await withModelOverlayLock(async () => {
+    // Keep the credential write and the provider selection in one cross-process
+    // critical section. A concurrent remove must not delete the key between
+    // these operations and leave an enabled credentialless provider behind.
+    target = writeProviderCredential(provider, value);
+    enableProvider(provider.id);
+    refreshed = refreshTargetPickerIfInstalled();
+  });
   process.stdout.write(
     `${provider.displayName} ${credentialNoun} saved to protected local storage at ${target}. The provider is enabled.${
-      refreshed ? ` Fully quit and reopen ${targetPickerName()} to refresh the model picker.` : ""
+      refreshed ? ` ${targetRestartHint()}` : ""
     }\n`,
   );
   if (providerNeedsCuration(provider.id)) {
@@ -257,12 +259,20 @@ if (command === "status") {
     );
   }
 } else {
-  const removal = removeApiCredential(provider.id);
-  const refreshed = removal.removedFiles ? refreshTargetPickerIfInstalled() : false;
+  let removal;
+  let refreshed;
+  await withModelOverlayLock(async () => {
+    // Deletion and withdrawal are intentionally one plain lock scope. There
+    // is no rollback of credential files, so a publication failure leaves the
+    // coherent result (credential gone, provider disabled) rather than a
+    // selection restored next to a deleted secret.
+    removal = removeApiCredential(provider.id);
+    refreshed = removal.removedFiles ? refreshTargetPickerIfInstalled() : false;
+  });
   process.stdout.write(
     removal.removedFiles
       ? `Removed ${removal.removedFiles} managed ${provider.displayName} ${credentialNoun} file${removal.removedFiles === 1 ? "" : "s"} and disabled the provider.${
-          refreshed ? ` Fully quit and reopen ${targetPickerName()} to refresh the model picker.` : ""
+          refreshed ? ` ${targetRestartHint()}` : ""
         }\n`
       : `No managed ${provider.displayName} ${credentialNoun} file exists.\n`,
   );

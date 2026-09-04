@@ -7,7 +7,7 @@
       "upstreamModel": "deepseek-v4-pro",
       "provider": "deepseek",
       "listed": true,
-      "displayName": "DeepSeek V4 Pro (DeepSeek API)",
+      "displayName": "DeepSeek V4 Pro (API)",
       "description": "DeepSeek V4 Pro via the DeepSeek API with reasoning, coding, tool calls, and a 1M context window.",
       "priority": 7,
       "defaultEffort": "high",
@@ -27,6 +27,7 @@
         "text"
       ],
       "requestProfile": "deepseek-thinking",
+      "supportsReasoningSummaries": true,
       "compHash": "deepseek-v4-pro-v1"
     }
   ]

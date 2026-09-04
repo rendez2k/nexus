@@ -1,7 +1,7 @@
 .DS_Store
 .venv/
 .build/
-node_modules/
+node_modules
 dist/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
@@ -13,7 +13,14 @@ apps/desktop/src-tauri/icons/StoreLogo.png
 apps/desktop/src-tauri/icons/icon.icns
 *.log
 *.tmp
+.electron-shots/
+release/
+generated/
 
-# per-session runtime state, not source
-.omc/state/
-.omc/sessions/
+# Electron builder output lands in sibling dirs of release/ during local
+# packaging runs (release-local, release-rebuild, release-rebuild-N). The bare
+# `release/` rule above never covered them, so ~3 GB of compiled app bundles sat
+# untracked-but-unignored -- which is how 180 MB `Codex` binaries reached the
+# object store in the first place.
+release-local/
+release-rebuild*/

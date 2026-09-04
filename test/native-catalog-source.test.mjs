@@ -23,7 +23,6 @@ const {
   prepareNativeCatalogSourceFromConfig,
   readNativeCatalogFile,
   readNativeCatalogSource,
-  readRootStringValues,
 } = await import("../src/native-catalog-source.mjs");
 const { privateFileIsProtected } = await import("../src/file-security.mjs");
 
@@ -103,47 +102,4 @@ test("native catalog adoption rejects custom routing and routed slugs", () => {
 
 test.after(() => {
   rmSync(testRoot, { recursive: true, force: true });
-});
-
-// `\r` is a TOML escape and the start of a great many Windows profile paths.
-// Decoding escape-by-escape ate the one in `C:\Users\rende\...`, so the router
-// stopped recognizing its own catalog on every machine whose next path segment
-// begins with b, f, n, r, or t -- reporting the user's own install as foreign.
-test("an unescaped Windows path keeps every segment that spells a TOML escape", () => {
-  for (const literal of [
-    String.raw`C:\Users\rende\AppData\Local\codex-router\merged-models.json`,
-    String.raw`C:\Users\bob\naomi\framework\tess\models.json`,
-    String.raw`D:\temp\new\build\files\router.json`,
-  ]) {
-    assert.deepEqual(
-      readRootStringValues(`model_catalog_json = "${literal}"\n`, "model_catalog_json"),
-      [literal],
-      `unescaped: ${literal}`,
-    );
-
-    // The same path spelled as a correct basic string has to decode to exactly
-    // the same value, or the two spellings would name different catalogs.
-    const escaped = literal.replaceAll("\\", "\\\\");
-    assert.deepEqual(
-      readRootStringValues(`model_catalog_json = "${escaped}"\n`, "model_catalog_json"),
-      [literal],
-      `escaped: ${escaped}`,
-    );
-  }
-});
-
-test("a well-formed basic string still decodes the escapes TOML defines", () => {
-  // Guard against "fixing" this by disabling decoding outright: a body whose
-  // escapes are all well formed and decode to no control character is a real
-  // basic string, and must still come back decoded.
-  assert.deepEqual(readRootStringValues('k = "\\u0041\\U0001F600"\n', "k"), [
-    "A\u{1F600}",
-  ]);
-  assert.deepEqual(readRootStringValues('k = "a\\"b"\n', "k"), ['a"b']);
-
-  // A path spelled correctly still decodes, because doubled backslashes
-  // produce backslashes rather than control characters.
-  assert.deepEqual(readRootStringValues('k = "C:\\\\tmp\\\\a.json"\n', "k"), [
-    String.raw`C:\tmp\a.json`,
-  ]);
 });

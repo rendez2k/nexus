@@ -1,19 +1,29 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
-  PROTECTION_EXPOSED,
-  PROTECTION_PROTECTED,
-  PROTECTION_UNKNOWN,
   privateFileIsProtected,
-  privateFileProtection,
   protectPrivateFile,
+  writePrivateJson,
   windowsFullControlGrant,
 } from "../src/file-security.mjs";
+
+test("private JSON state uses one owner-only atomic writer", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-router-private-json-"));
+  const target = path.join(directory, "state.json");
+  const value = { version: 1, enabled: true };
+  try {
+    assert.deepEqual(writePrivateJson(target, value, { directoryMode: 0o700 }), value);
+    assert.deepEqual(JSON.parse(readFileSync(target, "utf8")), value);
+    if (process.platform !== "win32") assert.equal(statSync(target).mode & 0o777, 0o600);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("Windows numeric SID grants use the icacls SID prefix", () => {
   assert.equal(
@@ -52,37 +62,3 @@ test(
     }
   },
 );
-
-// A shell that fails to start must not be reported as an exposed file. Doctor
-// renders "exposed" as a FAIL claiming the caller capability in config.toml is
-// readable by anyone, which reads as a credential leak and invites a rotation
-// that fixes nothing.
-test("protection state distinguishes an unreadable ACL from an exposed file", () => {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "nexus-protection-"));
-  try {
-    const target = path.join(directory, "config.toml");
-    writeFileSync(target, "openai_base_url = \"http://127.0.0.1:4102/_codex-router/x/v1\"\n");
-
-    assert.equal(privateFileProtection(path.join(directory, "absent.toml")), PROTECTION_EXPOSED);
-
-    protectPrivateFile(target);
-    const state = privateFileProtection(target);
-    assert.ok(
-      [PROTECTION_PROTECTED, PROTECTION_UNKNOWN].includes(state),
-      `a protected file must never read as exposed, got ${state}`,
-    );
-
-    // The boolean wrapper stays strict: only a definite yes counts, so callers
-    // that gate on it keep failing closed.
-    assert.equal(privateFileIsProtected(target), state === PROTECTION_PROTECTED);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("the three protection states are distinct", () => {
-  assert.equal(
-    new Set([PROTECTION_PROTECTED, PROTECTION_EXPOSED, PROTECTION_UNKNOWN]).size,
-    3,
-  );
-});

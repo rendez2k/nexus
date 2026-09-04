@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { pickerCommandArgs } from "../src/control-args.mjs";
+import { userModelEntry } from "../src/user-models.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -31,10 +32,35 @@ function probe(target, providers, usageEvents = [], options = {}) {
       { mode: 0o600 },
     );
   }
+  if (options.subagentSettings) {
+    writeFileSync(
+      path.join(stateDir, "multi-agent-settings.json"),
+      `${JSON.stringify({ version: 2, ...options.subagentSettings })}\n`,
+      { mode: 0o600 },
+    );
+  }
   if (options.selectedModel) {
     writeFileSync(
       path.join(stateDir, "config.toml"),
       `model = ${JSON.stringify(options.selectedModel)}\n`,
+      { mode: 0o600 },
+    );
+  }
+  if (options.hiddenModels) {
+    writeFileSync(
+      path.join(stateDir, "model-picker.json"),
+      `${JSON.stringify({
+        version: 1,
+        hidden: options.hiddenModels,
+        seeded: options.hiddenModels,
+      })}\n`,
+      { mode: 0o600 },
+    );
+  }
+  if (options.userModels) {
+    writeFileSync(
+      path.join(stateDir, "user-models.json"),
+      `${JSON.stringify({ version: 1, models: options.userModels })}\n`,
       { mode: 0o600 },
     );
   }
@@ -63,6 +89,7 @@ function probe(target, providers, usageEvents = [], options = {}) {
         CODEX_HOME: stateDir,
         MODEL_ROUTER_TARGET: target,
         MODEL_ROUTER_STATE_DIR: stateDir,
+        CODEX_ROUTER_TOOL_RESULT_AGING: "1",
       },
     });
     return JSON.parse(output);
@@ -76,6 +103,26 @@ test("codex probe reports enabled models", () => {
   assert.equal(slice.target, "codex");
   const deepseek = slice.models.filter((m) => m.provider === "deepseek");
   assert.ok(deepseek.length > 0 && deepseek.every((m) => m.enabled));
+});
+
+test("desktop snapshots expose Ox Alpha Free instead of its opaque OpenCode id", () => {
+  const stored = {
+    ...userModelEntry({
+      providerId: "opencode-free",
+      upstreamId: "x-preview-f-free",
+      priority: 100,
+      metadata: { isFree: true },
+    }),
+    // Simulate curation written by an older router. Registry normalization
+    // updates presentation without changing the routing identity.
+    displayName: "x-preview-f-free (curated)",
+  };
+  const slice = probe("codex", ["opencode-free"], [], { userModels: [stored] });
+  const model = slice.models.find((entry) => entry.slug === "opencode-free/x-preview-f-free");
+  assert.equal(model.displayName, "Ox Alpha Free");
+  assert.equal(model.slug, "opencode-free/x-preview-f-free");
+  assert.equal(model.provider, "opencode-free");
+  assert.equal(model.enabled, true);
 });
 
 test("codex probe folds protocol variants into one provider family", () => {
@@ -157,6 +204,81 @@ test("codex probe includes native GPT models and the configured default", () => 
   assert.equal(slice.loginFreeManaged, false);
   assert.equal(slice.modelSettings.picker.hidden.length, 0);
   assert.ok(["all", "selected", "proven"].includes(slice.modelSettings.subagents.mode));
+  // Compaction is opt-in, so an unconfigured probe reports it off.
+  assert.equal(slice.modelSettings.toolResultAging.enabled, false);
+  // The panel's periodic refresh reads this snapshot, not `local-models
+  // list`, so the LM Studio section has to ride here or it paints once and
+  // vanishes on the next poll.
+  assert.equal(slice.modelSettings.localModels.lmstudio.provider, "lmstudio");
+  assert.equal(typeof slice.modelSettings.localModels.lmstudio.reachable, "boolean");
+  assert.ok(Array.isArray(slice.modelSettings.localModels.lmstudio.models));
+});
+
+// The row is the whole feature: an entry the operator cannot find is an entry
+// that ships off forever. It belongs in the OpenAI group, drawn unchecked.
+test("codex probe draws the extended-context variant under OpenAI, switched off", () => {
+  const slice = probe("codex", [], [], {
+    hiddenModels: ["gpt-5.6-sol-1m"],
+    nativeModels: [
+      { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" },
+    ],
+  });
+
+  const variant = slice.models.find((model) => model.slug === "gpt-5.6-sol-1m");
+  assert.equal(variant.provider, "openai");
+  assert.equal(variant.native, true);
+  assert.equal(variant.visible, false);
+  assert.equal(variant.displayName, "GPT-5.6-Sol (1M context)");
+  // And it has not displaced the model it was derived from.
+  assert.equal(slice.models.find((model) => model.slug === "gpt-5.6-sol").visible, true);
+});
+
+test("a login-free probe draws no extended-context variant", () => {
+  const slice = probe("codex", ["deepseek"], [], {
+    loginFree: true,
+    nativeModels: [
+      { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" },
+    ],
+  });
+
+  assert.equal(slice.loginFree, true);
+  // Signed-out Codex only displays allowlisted native slugs, so the row would
+  // offer a model the picker can never show.
+  assert.equal(slice.models.some((model) => model.slug === "gpt-5.6-sol-1m"), false);
+  assert.ok(slice.models.some((model) => model.slug === "gpt-5.6-sol"));
+});
+
+test("codex probe reports the effective v2 state of selected native GPT models", () => {
+  const slice = probe("codex", [], [], {
+    nativeModels: [
+      {
+        slug: "gpt-5.6-terra",
+        display_name: "GPT-5.6-Terra",
+        visibility: "list",
+        multi_agent_version: "v1",
+      },
+      {
+        slug: "gpt-5.6-luna",
+        display_name: "GPT-5.6-Luna",
+        visibility: "list",
+        multi_agent_version: "v1",
+      },
+    ],
+    subagentSettings: {
+      mode: "selected",
+      enabled: ["gpt-5.6-terra"],
+      disabled: [],
+    },
+  });
+
+  assert.equal(
+    slice.models.find((model) => model.slug === "gpt-5.6-terra")?.multiAgentVersion,
+    "v2",
+  );
+  assert.equal(
+    slice.models.find((model) => model.slug === "gpt-5.6-luna")?.multiAgentVersion,
+    "v2",
+  );
 });
 
 test("codex probe exposes managed login-free mode without credential details", () => {
@@ -193,6 +315,34 @@ test("control exposes subagent and picker settings without credentials", () => {
       ),
     );
     assert.deepEqual(picker.hidden, []);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("control toggles tool-result aging without a router restart", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-tool-result-aging-"));
+  const env = {
+    ...process.env,
+    MODEL_ROUTER_TARGET: "codex",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+  };
+  delete env.CODEX_ROUTER_TOOL_RESULT_AGING;
+  const runControl = (action) =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        [path.join(root, "src", "control.mjs"), "tool-result-aging", action],
+        { cwd: root, encoding: "utf8", env },
+      ),
+    );
+  try {
+    // Starts off, because compaction is opted into.
+    assert.equal(runControl("status").enabled, false);
+    assert.equal(runControl("on").enabled, true);
+    assert.equal(runControl("status").enabled, true);
+    assert.equal(runControl("off").enabled, false);
+    assert.equal(runControl("status").enabled, false);
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
@@ -253,6 +403,20 @@ test("toggle on adds a provider; toggle off removes it", () => {
 
 test("toggle rejects an unknown provider", () => {
   assert.throws(() => probeSet("codex", ["deepseek"], "not-a-provider", "on"));
+});
+
+test("set-apply keeps provider mutation, publication, and rollback in one transaction", () => {
+  const source = readFileSync(path.join(root, "src", "control.mjs"), "utf8");
+  const atomic = source.match(
+    /async function runSetApply[\s\S]*?\r?\n}\r?\n\r?\nasync function printAccountUsage/,
+  )?.[0];
+  assert.ok(atomic, "atomic set/apply helper should be readable");
+  assert.match(atomic, /transactModelOverlayMutation\(\{/);
+  assert.match(atomic, /files: \[PROVIDER_SELECTION_PATH\]/);
+  assert.match(atomic, /mutate: \(\) => setProviderSelectionForTargets/);
+  assert.match(atomic, /applyProviderSelectionForTargets\(TARGETS, \{ activate \}\)/);
+  assert.match(atomic, /const activate = args\.includes\("--activate"\)/);
+  assert.match(source, /args\[0\] === "set-apply"[\s\S]{0,260}runSetApply\(args\[1\], args\[2\]\)/);
 });
 
 test("login-free control selects a ready external model and restores Codex defaults", () => {
@@ -483,11 +647,184 @@ test("model-set switches the login-free model and rejects unavailable models", (
   }
 });
 
-test("aggregate overview covers every target", () => {
+test("signed routing rolls back catalog and config after a forced post-publication failure", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-signed-rollback-"));
+  const configPath = path.join(stateDir, "config.toml");
+  const originalCatalog = {
+    models: [
+      {
+        slug: "gpt-5.6-sol",
+        display_name: "GPT-5.6-Sol",
+        visibility: "list",
+        priority: 10,
+      },
+    ],
+  };
+  const staleMergedCatalog = {
+    models: [
+      ...originalCatalog.models,
+      {
+        slug: "deepseek/deepseek-v4-flash",
+        display_name: "DeepSeek V4 Flash",
+        visibility: "list",
+        priority: 6,
+      },
+    ],
+  };
+  writeFileSync(
+    configPath,
+    `model_provider = "custom"
+
+[model_providers.custom]
+name = "CC Switch"
+base_url = "https://direct.invalid/v1"
+
+[model_providers.custom.query_params]
+api_key = "ROLLBACK_QUERY_SECRET"
+`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(stateDir, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(path.join(stateDir, "deepseek-api-key.secret"), "test-provider-key\n", {
+    mode: 0o600,
+  });
+  writeFileSync(
+    path.join(stateDir, "caller-secret"),
+    "test-control-caller-capability-with-sufficient-length\n",
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(stateDir, "native-models.json"),
+    `${JSON.stringify(originalCatalog)}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(stateDir, "merged-models.json"),
+    `${JSON.stringify(staleMergedCatalog, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  const environment = {
+    ...process.env,
+    CODEX_HOME: stateDir,
+    CODEX_BIN: process.execPath,
+    MODEL_ROUTER_TARGET: "codex",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_TEST_FAIL_AFTER_CATALOG_WRITE: "1",
+  };
+  try {
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [path.join(root, "src", "control.mjs"), "signed-routing", "on"],
+          { cwd: root, encoding: "utf8", env: environment, stdio: "pipe" },
+        ),
+      /catalog|publication/i,
+    );
+    const restoredConfig = readFileSync(configPath, "utf8");
+    assert.match(restoredConfig, /^model_provider = "custom"$/m);
+    assert.match(restoredConfig, /base_url = "https:\/\/direct\.invalid\/v1"/);
+    assert.match(restoredConfig, /api_key = "ROLLBACK_QUERY_SECRET"/);
+    assert.doesNotMatch(restoredConfig, /codex-router-signed-provider-managed/);
+    const safeCatalog = JSON.parse(
+      readFileSync(path.join(stateDir, "merged-models.json"), "utf8"),
+    );
+    assert.equal(
+      safeCatalog.models.some((model) => model.slug === "deepseek/deepseek-v4-flash"),
+      false,
+    );
+    assert.equal(
+      existsSync(path.join(stateDir, "signed-provider-mode.json")),
+      false,
+    );
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// The state directory is pinned per case on purpose: this assertion used to
+// read the developer's own installation, so publishing to DeepSeek Harness on
+// the machine running the tests changed the expected target list.
+function overviewTargets(stateDir) {
   const output = execFileSync(process.execPath, [path.join(root, "src", "control.mjs"), "--json"], {
     cwd: root,
     encoding: "utf8",
+    env: { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir },
   });
-  const overview = JSON.parse(output);
-  assert.deepEqual(Object.keys(overview.targets).sort(), ["codex"]);
+  return Object.keys(JSON.parse(output).targets).sort();
+}
+
+test("aggregate overview covers every target", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-targets-"));
+  try {
+    assert.deepEqual(overviewTargets(stateDir), ["codex"]);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("aggregate overview exposes the router-owned catalog separately from client probes", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-catalog-"));
+  try {
+    const output = execFileSync(process.execPath, [path.join(root, "src", "control.mjs"), "--json"], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CODEX_HOME: stateDir,
+        MODEL_ROUTER_STATE_DIR: stateDir,
+      },
+    });
+    const parsed = JSON.parse(output);
+    assert.equal(parsed.catalog.source, "codex-router");
+    assert.ok(Array.isArray(parsed.catalog.models));
+    assert.ok(Array.isArray(parsed.catalog.enabledProviders));
+    assert.ok(Array.isArray(parsed.catalog.picker.hidden));
+    assert.ok(Array.isArray(parsed.catalog.picker.visible));
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("the harness target appears only once its route has been published", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-targets-dsh-"));
+  try {
+    writeFileSync(
+      path.join(stateDir, "dsh-models.json"),
+      `${JSON.stringify({ version: 1, route: "codex-router", models: [] })}\n`,
+      { mode: 0o600 },
+    );
+    assert.deepEqual(overviewTargets(stateDir), ["codex", "dsh"]);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("the tray usage advertises rebuild alongside the supervised actions", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-tray-usage-"));
+  try {
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [path.join(root, "src", "control.mjs"), "tray", "bogus"],
+          {
+            cwd: root,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir },
+          },
+        ),
+      (error) => {
+        assert.match(String(error.stderr), /Usage: control tray enable\|disable\|status\|restart\|rebuild/);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });

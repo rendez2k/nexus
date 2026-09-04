@@ -14,7 +14,7 @@ import test from "node:test";
 const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-credentials-"));
 process.env.CODEX_HOME = path.join(testRoot, "codex");
 process.env.CODEX_ROUTER_STATE_DIR = path.join(testRoot, "state");
-for (const name of ["ANTHROPIC_API_KEY", "CLINE_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY", "GROK_API_KEY"]) {
+for (const name of ["ANTHROPIC_API_KEY", "CHUTES_API_KEY", "CLINE_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY", "GROK_API_KEY"]) {
   delete process.env[name];
 }
 
@@ -30,6 +30,14 @@ const { privateFileIsProtected } = await import("../src/file-security.mjs");
 
 test("provider credentials use protected files and remove legacy managed keys", () => {
   try {
+    const anonymous = resolveProviderCredential("opencode-free");
+    assert.deepEqual(anonymous, {
+      value: undefined,
+      source: "official anonymous endpoint",
+      persistent: true,
+    });
+    assert.throws(() => writeProviderCredential("opencode-free", "SHOULD_NOT_BE_STORED"), /Unknown API-key provider/);
+
     const deepSeekPath = writeProviderCredential("deepseek", "TEST_DEEPSEEK_FILE_KEY");
     assert.equal(privateFileIsProtected(deepSeekPath), true);
     if (process.platform !== "win32") {
@@ -77,6 +85,10 @@ test("provider credentials use protected files and remove legacy managed keys", 
     assert.equal(privateFileIsProtected(clinepassPath), true);
     assert.equal(resolveProviderCredential("clinepass")?.value, "TEST_CLINEPASS_FILE_KEY");
 
+    const chutesPath = writeProviderCredential("chutes", "TEST_CHUTES_FILE_KEY");
+    assert.equal(privateFileIsProtected(chutesPath), true);
+    assert.equal(resolveProviderCredential("chutes")?.value, "TEST_CHUTES_FILE_KEY");
+
     const legacyDirectory = path.join(process.env.CODEX_HOME, "kimi-router");
     const legacyPath = path.join(legacyDirectory, "api-key.secret");
     mkdirSync(legacyDirectory, { recursive: true, mode: 0o700 });
@@ -90,13 +102,45 @@ test("provider credentials use protected files and remove legacy managed keys", 
     assert.equal(removeProviderCredential("anthropic-api"), 1);
     assert.equal(removeProviderCredential("github-copilot"), 1);
     assert.equal(removeProviderCredential("clinepass"), 1);
+    assert.equal(removeProviderCredential("chutes"), 1);
     assert.equal(existsSync(deepSeekPath), false);
     assert.equal(existsSync(xaiPath), false);
     assert.equal(existsSync(anthropicPath), false);
     assert.equal(existsSync(copilotPath), false);
     assert.equal(existsSync(clinepassPath), false);
+    assert.equal(existsSync(chutesPath), false);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("--no-discovery blinds the resolver to stored keys without a single keychain spawn", () => {
+  try {
+    // A credential really is on disk; the kill-switch must refuse to see it.
+    writeProviderCredential("deepseek", "TEST_DEEPSEEK_HIDDEN_KEY");
+    process.env.DEEPSEEK_API_KEY = "TEST_DEEPSEEK_ENVIRONMENT_KEY";
+    process.env.CODEX_ROUTER_NO_DISCOVERY = "1";
+    resetKeychainCache();
+
+    const before = keychainProbeCount();
+    assert.equal(resolveProviderCredential("deepseek"), undefined);
+    assert.equal(resolveProviderCredential("openrouter", { persistent: true }), undefined);
+    assert.equal(keychainProbeCount(), before, "the kill-switch still spawned /usr/bin/security");
+
+    // Sources that read nothing keep answering: anonymous and keyless
+    // providers carry no secret, so they are not discovery.
+    assert.equal(resolveProviderCredential("opencode-free")?.persistent, true);
+
+    delete process.env.CODEX_ROUTER_NO_DISCOVERY;
+    assert.equal(
+      resolveProviderCredential("deepseek", { persistent: true })?.value,
+      "TEST_DEEPSEEK_HIDDEN_KEY",
+      "lifting the switch must reveal the stored key again",
+    );
+  } finally {
+    delete process.env.CODEX_ROUTER_NO_DISCOVERY;
+    delete process.env.DEEPSEEK_API_KEY;
+    removeProviderCredential("deepseek");
   }
 });
 
