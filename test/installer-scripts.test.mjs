@@ -631,3 +631,18 @@ test("both installers record the manifest before waiting on health", () => {
     "Windows must record the manifest before the health wait",
   );
 });
+
+test("both installers waive the state-ownership guard", () => {
+  // Installing is how a checkout takes over a state directory, so the guard has
+  // to be waived for the install itself. bin/install did this and install.ps1
+  // did not, which made every Windows checkout install onto a machine that
+  // already had one fail at catalog generation with "owned by another
+  // checkout" - a dead end with no documented way past it.
+  for (const script of ["bin/install", "install.ps1"]) {
+    assert.match(
+      readFileSync(path.join(root, script), "utf8"),
+      /MODEL_ROUTER_ALLOW_FOREIGN_STATE/,
+      `${script} must waive the ownership guard`,
+    );
+  }
+});

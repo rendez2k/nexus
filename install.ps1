@@ -29,6 +29,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Installing is the sanctioned way for a checkout to take over a state
+# directory: generated files are rebuilt here and the new owner is recorded at
+# the end, so the ownership guard must not block this run. bin/install has set
+# this since the guard was introduced; without it here, every Windows checkout
+# install onto a machine that already had one died at catalog generation with
+# "owned by another checkout".
+$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "1"
 $env:MODEL_ROUTER_TARGET = $Target
 # Legacy migration replaces an older router's managed Codex config block, and
 # the native catalog is the ChatGPT-plan model list Codex adopts. Neither has a

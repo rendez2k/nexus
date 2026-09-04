@@ -70,6 +70,19 @@ cd $env:USERPROFILE\Documents\nexus-deploy
 .\install.ps1 -CheckoutInstall -Target codex
 ```
 
+If the install stops with **"owned by another checkout"**, the copy of
+`install.ps1` you are running predates the fix for it - update the checkout and
+run it again, or set the waiver by hand for that one command:
+
+```powershell
+$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "1"
+.\install.ps1 -CheckoutInstall -Target codex
+```
+
+That guard exists to stop two checkouts writing the same state and making Codex
+advertise models the running gateway cannot route. An install is the one time
+transferring ownership is intended, which is why the installer waives it.
+
 `-CheckoutInstall` installs from the checkout you are standing in rather than
 cloning upstream. That distinction is the whole point of this guide: the old
 install's `origin` pointed at `duolahypercho/codex-router`, so `bin/update` and
