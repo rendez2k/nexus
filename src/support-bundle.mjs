@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { readCliSessionCredential } from "./cli-session-credential.mjs";
 import {
   chmodSync,
   existsSync,
@@ -91,6 +92,10 @@ function knownLocalSecrets() {
     // nothing to redact for it.
     if (providerNeedsNoKey(provider)) continue;
     files.push(...credentialPaths(provider));
+    // A key minted by the provider's own CLI never lands in credentialPaths,
+    // so collecting only those files would ship it unredacted.
+    const session = readCliSessionCredential(provider);
+    if (session?.value) values.add(session.value);
     for (const name of provider.credential.environment) {
       const value = process.env[name]?.trim();
       if (value) values.add(value);

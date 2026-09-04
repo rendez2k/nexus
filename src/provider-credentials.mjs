@@ -1,5 +1,9 @@
 import { execFileSync } from "node:child_process";
 import {
+  cliSessionDescriptor,
+  readCliSessionCredential,
+} from "./cli-session-credential.mjs";
+import {
   chmodSync,
   existsSync,
   mkdirSync,
@@ -195,7 +199,13 @@ export function resolveProviderCredential(providerOrId, options = {}) {
     const credential = resolvedCredential(provider, keychain.value, keychain.source, true);
     if (credential) return credential;
   }
-  return undefined;
+  // The provider CLI's own sign-in comes last: a key the user deliberately
+  // stored here, or exported into the environment, stays in charge, and the
+  // session only fills the gap for someone who never pasted one.
+  const session = readCliSessionCredential(provider);
+  return session
+    ? resolvedCredential(provider, session.value, session.label, true)
+    : undefined;
 }
 
 export function credentialSetupHint(provider) {
@@ -203,7 +213,13 @@ export function credentialSetupHint(provider) {
   if (provider.authMode === "per-model") return "No key needed here; each model names its own endpoint.";
   if (provider.keyless) return "No key needed; it runs on this machine.";
   const keyCommand = targetCli(`provider-key ${provider.id} set`);
-  return `Run ${keyCommand}`;
+  // Providers that support a CLI sign-in have two equally valid setup paths,
+  // and naming only the key one hides the browser flow from every surface that
+  // prints this sentence (doctor, discovery errors, the enable gate).
+  const session = cliSessionDescriptor(provider);
+  return session
+    ? `Run \`${session.loginCommand}\`, or run ${keyCommand}`
+    : `Run ${keyCommand}`;
 }
 
 export function credentialLabel(provider) {

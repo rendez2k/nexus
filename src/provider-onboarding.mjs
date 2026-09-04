@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,6 +9,7 @@ import {
   grokCliPreflight,
 } from "./grok-cli.mjs";
 import { devinCliStatus } from "./devin-cli-status.mjs";
+import { cliSessionPath, cliSessionStatus } from "./cli-session-credential.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { KIMI_CLI_NPM_PACKAGE } from "./kimi-oauth-onboarding.mjs";
 import { MODELS, PROVIDERS, providerNeedsNoKey } from "./model-registry.mjs";
@@ -26,6 +27,7 @@ import {
   npmInstallGlobal,
   spawnEnvironment,
 } from "./npm-global-install.mjs";
+import { STATE_DIR } from "./paths.mjs";
 import { commandOnPath, spawnableCommand } from "./spawnable-command.mjs";
 
 const SIGN_IN_CLIS = Object.freeze({
@@ -39,6 +41,20 @@ const SIGN_IN_CLIS = Object.freeze({
     executable: "grok",
     npmPackage: "@xai-official/grok",
     loginArgs: ["login", "--oauth"],
+  },
+  // Command Code ships `cmd`, `cmdc`, `commandcode`, and `command-code` from
+  // one package. Only `command-code` is unambiguous everywhere - `cmd` is the
+  // Windows shell - so the tray always drives that name.
+  commandcode: {
+    executable: "command-code",
+    npmPackage: "command-code",
+    loginArgs: ["login"],
+    candidates: [path.join(os.homedir(), ".npm-global", "bin", "command-code")],
+    // `command-code login` draws an Ink interface and puts stdin in raw mode,
+    // which a piped stdio pair cannot provide: spawned from the tray it dies
+    // on "Raw mode is not supported" before it ever opens the browser. It has
+    // to be handed a real terminal.
+    needsTerminal: true,
   },
   // Devin ships no npm package: it is a Rust binary installed by Cognition's
   // own script or Homebrew cask. `installCommand` is what the tray offers
@@ -84,7 +100,14 @@ function oauthConfigured(providerId) {
   if (providerId === "kimi-oauth") return kimiOAuthStatus().configured;
   if (providerId === "grok-oauth") return grokOAuthStatus().configured;
   if (providerId === "devin-cli") return devinCliStatus().configured;
-  return false;
+  // Providers whose CLI writes its own session file (Command Code) are
+  // configured when that file is readable, not when a key was pasted.
+  const provider = PROVIDERS.get(providerId);
+  return provider ? cliSessionStatus(provider).configured : false;
+}
+
+function hasSignInCli(providerId) {
+  return Object.hasOwn(SIGN_IN_CLIS, providerId);
 }
 
 export function providerOnboardingSnapshot() {
@@ -130,6 +153,21 @@ export function providerOnboardingSnapshot() {
         // moment someone decides to connect, not after Codex 403s.
         ...(provider.planNote ? { planNote: provider.planNote } : {}),
       };
+      // A provider whose CLI mints its key through a browser sign-in keeps the
+      // key field (people with a Studio key still paste it) and gains a second
+      // route. The tray needs both states to label the row honestly: whether
+      // the CLI is present, and whether the key in play came from the session.
+      const session = cliSessionStatus(provider);
+      if (session.supported && hasSignInCli(provider.id)) {
+        const cliInstalled = Boolean(oauthCliPath(provider.id));
+        return {
+          ...entry,
+          signIn: true,
+          signedIn: session.configured,
+          cliInstalled,
+          signInAction: !cliInstalled ? "install" : session.configured ? "ready" : "login",
+        };
+      }
       // A container has no key field of its own. Saying so is the whole card:
       // an "Add Key" button here would store a secret nothing ever reads.
       if (provider.authMode === "per-model") {
@@ -197,6 +235,72 @@ export function installOauthCli(providerId) {
 // in, and authorize — but it must not be able to wedge the tray forever if the
 // CLI waits on a terminal it will never get.
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
+// A terminal sign-in is watched by polling the session file rather than by
+// waiting on a child, so it needs its own, shorter ceiling: the operator can
+// see the window and retry, and a tray that polls for ten minutes reads as hung.
+const TERMINAL_LOGIN_TIMEOUT_MS = 3 * 60_000;
+
+// Hands the CLI a real terminal window and waits for the credential it writes.
+// The tray has no terminal to lend, and a login this router cannot see the end
+// of is a login the operator would have to come back and repeat.
+// Reconnecting starts from an already-valid session, so "is it configured?"
+// is true before the operator has done anything. Waiting for the CLI to
+// rewrite the file is what actually distinguishes a finished sign-in.
+function sessionWrittenAt(providerId) {
+  const file = cliSessionPath(PROVIDERS.get(providerId));
+  if (!file || !existsSync(file)) return 0;
+  try {
+    return statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function signedInSince(providerId, before) {
+  return sessionWrittenAt(providerId) > before && oauthConfigured(providerId);
+}
+
+function signInThroughTerminal(providerId, executable) {
+  const cli = SIGN_IN_CLIS[providerId];
+  const before = sessionWrittenAt(providerId);
+  // Terminal.app rather than the operator's preferred terminal: it is always
+  // present, and `open -a` needs no Automation consent the way driving a
+  // specific app with AppleScript would. The override exists so tests (and
+  // anyone whose environment cannot use `open`) can point at another launcher —
+  // which is also the only way this route works off macOS, where there is no
+  // `open -a Terminal` to fall back to.
+  const launcher = process.env.MODEL_ROUTER_TERMINAL_LAUNCHER;
+  if (process.platform !== "darwin" && !launcher) {
+    throw new Error(
+      `${cli.executable} signs in through an interactive terminal. Run \`${cli.executable} ${cli.loginArgs.join(" ")}\` in one, then reopen this.`,
+    );
+  }
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  const script = path.join(STATE_DIR, `sign-in-${providerId}.command`);
+  const quoted = [executable, ...cli.loginArgs]
+    .map((part) => `'${part.replaceAll("'", "'\\''")}'`)
+    .join(" ");
+  writeFileSync(script, `#!/bin/sh\nexec ${quoted}\n`, { encoding: "utf8", mode: 0o700 });
+  const opened = launcher
+    ? spawnSync(launcher, [script], { encoding: "utf8", env: spawnEnvironment() })
+    : spawnSync("/usr/bin/open", ["-a", "Terminal", script], {
+        encoding: "utf8",
+        env: spawnEnvironment(),
+      });
+  if (opened.error || opened.status !== 0) {
+    throw new Error(`Could not open Terminal to run ${cli.executable}.`);
+  }
+  const deadline = Date.now() + TERMINAL_LOGIN_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (signedInSince(providerId, before)) return;
+    // A short blocking sleep: this runs in the one-shot control process the
+    // tray spawned, which has nothing else to do while the operator signs in.
+    Atomics.wait(WAIT_HANDLE, 0, 0, POLL_INTERVAL_MS);
+  }
+  throw new Error(
+    `Still waiting on ${cli.executable} in the Terminal window. Finish signing in there — the tray picks it up on its own.`,
+  );
+}
 
 export function loginOauthProvider(providerId) {
   const executable = oauthCliPath(providerId);
@@ -204,6 +308,11 @@ export function loginOauthProvider(providerId) {
   if (providerId === "grok-oauth") {
     const preflight = grokCliPreflight({ executable });
     if (!preflight.runnable) throw new Error(grokCliFailureMessage(preflight));
+  }
+  // With a terminal of our own (guided setup) the CLI can simply inherit it.
+  if (SIGN_IN_CLIS[providerId].needsTerminal && !process.stdin.isTTY) {
+    signInThroughTerminal(providerId, executable);
+    return;
   }
   // The CLI itself is another `#!/usr/bin/env node` script, so signing in needs
   // the same PATH repair the install did.

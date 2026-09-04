@@ -329,7 +329,7 @@ test("the Provider plan requirement is stated wherever Command Code is connected
       { cwd: root, encoding: "utf8", env: environmentValues },
     );
     assert.equal(enabled.status, 0, enabled.stderr);
-    assert.match(enabled.stdout, /Provider plan/);
+    assert.match(enabled.stdout, /Provider API access/);
 
     const doctor = spawnSync(process.execPath, [path.join(root, "src", "doctor.mjs"), "--json"], {
       cwd: root,
@@ -347,7 +347,7 @@ test("the Provider plan requirement is stated wherever Command Code is connected
       { cwd: root, encoding: "utf8", env: environmentValues },
     );
     const row = JSON.parse(snapshot.stdout).providers.find((p) => p.id === "commandcode");
-    assert.match(row.planNote, /Provider plan/);
+    assert.match(row.planNote, /Provider API access/);
     // Providers without the gate must stay silent about plans.
     const deepseek = JSON.parse(snapshot.stdout).providers.find((p) => p.id === "deepseek");
     assert.equal("planNote" in deepseek, false);

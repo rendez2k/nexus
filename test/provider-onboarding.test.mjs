@@ -73,7 +73,13 @@ test("provider onboarding reports install, login, and API key actions without se
     assert.equal(byId["anthropic-api"].action, "add-key");
     assert.equal(byId["minimax-token-plan"].action, "add-key");
     assert.equal(byId.commandcode.action, "add-key");
-    assert.equal("signIn" in byId.commandcode, false);
+    // Deliberate divergence from upstream, which asserts signIn is absent
+    // because it rejects credential.cliSession outright. This fork supports the
+    // Command Code CLI sign-in, so the row carries both routes: the key field
+    // stays (a pasted key still outranks the session) and signIn appears beside
+    // it. cli-session-credential.test.mjs owns the behaviour itself.
+    assert.equal(byId.commandcode.signIn, true);
+    assert.equal(byId.commandcode.signedIn, false);
     assert.equal(byId["github-copilot"].action, "add-key");
     assert.equal(byId["github-copilot"].credentialLabel, "GitHub token");
     assert.equal("credentialLabel" in byId["deepseek"], false);
