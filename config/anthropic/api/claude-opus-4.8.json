@@ -7,7 +7,7 @@
       "upstreamModel": "claude-opus-4-8",
       "provider": "anthropic-api",
       "listed": true,
-      "displayName": "Claude Opus 4.8 (API)",
+      "displayName": "Claude Opus 4.8 (Anthropic API)",
       "description": "Claude Opus 4.8 through the separately billed Anthropic API for complex agentic coding.",
       "priority": 9,
       "defaultEffort": "high",

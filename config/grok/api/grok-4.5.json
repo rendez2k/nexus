@@ -8,7 +8,7 @@
       "provider": "grok-api",
       "listed": true,
       "multiAgentVersion": "v2",
-      "displayName": "Grok 4.5 (API)",
+      "displayName": "Grok 4.5 (xAI Grok API)",
       "description": "Grok 4.5 through the separately billed xAI API with agentic coding, tools, and a 500k context window.",
       "priority": 8,
       "defaultEffort": "high",

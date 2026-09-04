@@ -11,6 +11,12 @@ import {
 import { promisify } from "node:util";
 
 import {
+  anthropicErrorBody,
+  inboundForwardHeaders,
+  resolveInboundModel,
+  rewriteInboundBody,
+} from "./anthropic-inbound.mjs";
+import {
   assertCallerSecret,
   authenticatedRoute,
   callerBaseUrl,
@@ -187,6 +193,10 @@ const NATIVE_IMAGE_PATHS = new Set([
 ]);
 const NATIVE_SEARCH_PATHS = new Set(["/alpha/search", "/v1/alpha/search"]);
 const AGENT_PAYLOAD_RELAY_TOOL = "relay_external_agent_payload";
+// Claude Code speaks the Messages API on its own base path rather than
+// sharing /v1 with Codex: both clients call GET /v1/models and expect a
+// different shape back.
+const ANTHROPIC_PREFIX = "/anthropic";
 const AGENT_PAYLOAD_CACHE_TTL_MS = 15 * 60 * 1_000;
 const AGENT_PAYLOAD_CACHE_MAX_BYTES = 8 * 1024 * 1024;
 const AGENT_PAYLOAD_CACHE_MAX_ENTRIES = 256;
@@ -1854,6 +1864,94 @@ function geminiRoutedModels() {
   }));
 }
 
+async function handleAnthropicModels(response) {
+  writeJson(response, 200, buildDiscoveryCatalog(discoveryModels()));
+}
+
+// Claude Code posts from a CLI, never a browser. The Codex path rejects
+// browser-originated requests because this router authenticates by a URL that a
+// page could be handed; the same reasoning applies here.
+function requireAnthropicTransport(request, response) {
+  if (request.headers.origin || request.headers["sec-fetch-site"]) {
+    writeJson(
+      response,
+      403,
+      anthropicErrorBody(
+        "permission_error",
+        "Browser-originated requests are not accepted by the local model router.",
+      ),
+    );
+    return false;
+  }
+  return true;
+}
+
+// NOTE: routed turns from Claude Code are not metered into the usage events the
+// tray graphs yet. Anthropic streams token counts on `message_start` and
+// `message_delta`, which needs its own transform; until that exists the tray's
+// token totals cover Codex traffic only. Recording an invented zero here would
+// be worse than the gap, so nothing is recorded.
+async function handleAnthropicMessages(request, response, requestUrl) {
+  if (!requireAnthropicTransport(request, response)) return;
+  const payload = parseBody(await readRequestBody(request));
+  const resolved = resolveInboundModel(payload.model, MODEL_BY_SLUG);
+  if (!resolved.ok) {
+    writeJson(response, resolved.status, resolved.body);
+    return;
+  }
+
+  // The client hanging up has to tear the upstream read down too, or a
+  // cancelled Claude Code turn keeps burning provider quota to a socket that
+  // stopped reading.
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  request.once("aborted", abort);
+  response.once("close", abort);
+
+  const target = `${GATEWAY_BASE}${requestUrl.pathname.replace(/^\/v1(?=\/|$)/, "")}`;
+  const upstream = await fetch(target, {
+    method: "POST",
+    headers: inboundForwardHeaders(request.headers, INTERNAL_KEY),
+    body: JSON.stringify(rewriteInboundBody(payload, resolved.gatewayModel)),
+    signal: controller.signal,
+  });
+
+  // Streamed straight through rather than buffered: Claude Code counts every
+  // relayed byte including SSE pings and aborts a stream that goes quiet for
+  // 300 seconds, so buffering a long thinking pause would kill the turn.
+  await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS);
+  endStreamedResponse(response);
+}
+
+async function handleAnthropicRequest(request, response, requestUrl) {
+  // A best-effort connection warmer Claude Code sends at startup. The contract
+  // allows rejecting it, but answering keeps a confusing 404 out of the log of
+  // anyone reading the router's traffic to debug something else.
+  if (request.method === "HEAD" && requestUrl.pathname === "/api/hello") {
+    response.writeHead(200, { "Content-Length": "0" });
+    response.end();
+    return;
+  }
+  if (request.method === "GET" && ["/models", "/v1/models"].includes(requestUrl.pathname)) {
+    await handleAnthropicModels(response);
+    return;
+  }
+  if (
+    request.method === "POST" &&
+    ["/v1/messages", "/messages", "/v1/messages/count_tokens", "/messages/count_tokens"].includes(
+      requestUrl.pathname,
+    )
+  ) {
+    await handleAnthropicMessages(request, response, requestUrl);
+    return;
+  }
+  writeJson(
+    response,
+    404,
+    anthropicErrorBody("not_found_error", "Unsupported router route."),
+  );
+}
+
 function requireCodexTransport(request, response) {
   if (request.headers.origin || request.headers["sec-fetch-site"]) {
     writeJson(response, 403, {
@@ -3218,6 +3316,19 @@ async function handleRequest(request, response) {
     return;
   }
   requestUrl.pathname = route;
+
+  // Claude Code gets its own base path rather than sharing /v1 with Codex.
+  // Both clients call GET /v1/models and expect different shapes back, and
+  // guessing which one asked from a header would break the moment either
+  // client changed what it sends.
+  if (
+    requestUrl.pathname === ANTHROPIC_PREFIX ||
+    requestUrl.pathname.startsWith(`${ANTHROPIC_PREFIX}/`)
+  ) {
+    requestUrl.pathname = requestUrl.pathname.slice(ANTHROPIC_PREFIX.length) || "/";
+    await handleAnthropicRequest(request, response, requestUrl);
+    return;
+  }
 
   // Behind the caller capability, like every other local endpoint: the panel
   // reads the same data the tray does, so it is gated the same way.

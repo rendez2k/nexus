@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -84,4 +87,20 @@ test("the caller secret is redacted out of a Claude Code base URL before it is p
   const redacted = redactCallerUrl(anthropicBaseUrl(4102, SECRET));
   assert.equal(redacted.includes(SECRET), false);
   assert.match(redacted, /\[REDACTED\]/);
+});
+
+// The unit tests above all passed while router.mjs had no idea this route
+// existed: an upstream sync replaced the file, anthropic-inbound.mjs was left
+// imported by nothing, and Claude Code would have got a 404 from a green suite.
+// These assert the wiring itself, which is the part a module test cannot see.
+test("the router actually serves the Anthropic base path", () => {
+  const source = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "router.mjs"),
+    "utf8",
+  );
+  assert.match(source, /from "\.\/anthropic-inbound\.mjs"/);
+  assert.match(source, /const ANTHROPIC_PREFIX = "\/anthropic"/);
+  // Recognising the prefix is not enough; it has to reach the handler.
+  assert.match(source, /startsWith\(`\$\{ANTHROPIC_PREFIX\}\/`\)/);
+  assert.match(source, /await handleAnthropicRequest\(/);
 });

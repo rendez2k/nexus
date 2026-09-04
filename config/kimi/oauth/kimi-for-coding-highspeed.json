@@ -8,7 +8,7 @@
       "provider": "kimi-oauth",
       "listed": true,
       "multiAgentVersion": "v2",
-      "displayName": "K2.7 Coding Highspeed (OAuth)",
+      "displayName": "K2.7 Coding Highspeed (Kimi Code OAuth)",
       "description": "Kimi K2.7 Coding Highspeed using the existing Kimi Code CLI OAuth session.",
       "priority": 4,
       "defaultEffort": "high",
