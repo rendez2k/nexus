@@ -1,217 +1,192 @@
-# Deploying Nexus to a Windows machine
+# Getting Nexus running on Windows
 
-This tree is upstream `codex-router` at `9b2b88a` plus this fork's layer. It is
-roughly 84 modules and one minor version ahead of a checkout installed before
-that sync, so **it cannot be deployed by copying files over an older install**.
-Half-copying is what produced most of the confusion this fork has already been
-through: a tree where `src/` and `config/` disagree fails in ways that look like
-credential, catalog or service problems and are none of them.
+Ten minutes, six steps, one folder. Read the first section once so the rest
+makes sense; after that, just do the steps in order.
 
-Install it as an install. The steps below take about ten minutes.
+## Three folders, and what is in them
 
-## What survives, and what does not
-
-Nothing you care about lives in the checkout. It all lives in two places the
-installer does not touch:
-
-| Lives in | Contains | Survives a reinstall |
+| Folder | Holds | The steps below |
 | --- | --- | --- |
-| `%USERPROFILE%\.codex\codex-router\` | provider credentials (`*.secret`), OAuth sessions, `merged-models.json`, usage history | yes |
-| `%USERPROFILE%\.codex\config.toml` | Codex's own settings and the managed router block | yes, rewritten in place |
-| `%LOCALAPPDATA%\codex-router\` | the code | replaced |
+| `%LOCALAPPDATA%\codex-router` | **the code** | replace it |
+| `%USERPROFILE%\.codex\codex-router\` | your API keys, sign-ins, model list, usage history, `router.log` | never touched |
+| `%USERPROFILE%\.codex\config.toml` | Codex's own settings | rewritten in place, keys preserved |
 
-So a reinstall costs you no keys and no history. What it does replace is any
-edit made directly inside the install directory.
+Nothing you care about lives in the code folder, so replacing it costs you no
+keys and no history.
+
+The code has to live in that exact folder. The tray looks there, `doctor` looks
+there, and the background service is written to point wherever `install.ps1`
+was run from. An earlier attempt installed from `Documents\nexus-deploy`; that
+is why the tray could not find it.
 
 ## Before you start
 
-**1. Capture anything you changed in the install tree.**
+You need Git, Node.js 22.19 or newer, and either `uv` or Python 3.10+. Check all
+three in one go:
 
 ```powershell
-cd $env:LOCALAPPDATA\codex-router
-git status --short --untracked-files=no
-git diff > $env:USERPROFILE\Desktop\pre-deploy-local-edits.patch
+git --version; node --version; (uv --version 2>$null) ?? (py -3 --version 2>$null) ?? "no uv or python"
 ```
 
-If `git status` lists files, read the patch before continuing. Edits made in
-that directory exist nowhere else, and the reinstall overwrites them.
+If any line errors, install the missing one first (Node from nodejs.org, Git
+from git-scm.com, uv from docs.astral.sh/uv). Everything below assumes a normal
+PowerShell window, not an administrator one.
 
-**2. Note which providers are connected**, so you can tell afterwards whether
-anything was lost:
+## Step 1 - stop everything
 
-```powershell
-cd $env:LOCALAPPDATA\codex-router
-.\codex-router.ps1 providers
-```
-
-Write down the `SHOW ... ready` rows.
-
-**3. Stop the running router.** A live process holds the router port, and an
-installer that cannot bind it leaves a task that reports Ready while never
-starting - the deadlock that once left a router running unsupervised for
-sixteen hours.
-
-Clear both port ranges. An install from before the BrlAPI-safe defaults binds
-4100-4103; this one binds 4200-4203, and a half-migrated machine has one of
-each.
+Quit Codex fully (right-click its tray icon, Quit - closing the window is not
+enough). Then:
 
 ```powershell
-.\codex-router.ps1 disable
+Get-Process codex-router-desktop -ErrorAction SilentlyContinue | Stop-Process -Force
+schtasks /End /TN "Codex Router" 2>$null
 foreach ($p in 4100,4101,4102,4103,4200,4201,4202,4203) {
   $owner = (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue |
     Select-Object -First 1).OwningProcess
   if ($owner) { Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue }
 }
-Start-Sleep -Seconds 2
-Get-Process codex-router-desktop -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 3
 ```
 
-Quit Codex and the ChatGPT desktop app too.
+This stops the tray, the background task, and any router still holding a port.
+Both port ranges are listed because an older install used 4100-4103 and this
+one uses 4200-4203, and a half-migrated machine has one of each.
 
-## Deploy
+## Step 2 - move the old code aside
 
 ```powershell
-git clone -b claude/openrouter-deepseek-handoff-s1gfej `
-  https://github.com/rendez2k/nexus $env:USERPROFILE\Documents\nexus-deploy
-cd $env:USERPROFILE\Documents\nexus-deploy
-.\install.ps1 -CheckoutInstall -Target codex
+Rename-Item $env:LOCALAPPDATA\codex-router codex-router-old
 ```
 
-If the install stops with **"owned by another checkout"**, the copy of
-`install.ps1` you are running predates the fix for it - update the checkout and
-run it again, or set the waiver by hand for that one command:
+If this says the folder is in use, wait ten seconds and run step 1 again.
+Keeping it under a new name (rather than deleting it) is what lets you go back.
+
+## Step 3 - fetch the new code into the right folder
 
 ```powershell
-$env:MODEL_ROUTER_ALLOW_FOREIGN_STATE = "1"
-.\install.ps1 -CheckoutInstall -Target codex
+git clone -b claude/openrouter-deepseek-handoff-s1gfej https://github.com/rendez2k/nexus $env:LOCALAPPDATA\codex-router
 ```
 
-That guard exists to stop two checkouts writing the same state and making Codex
-advertise models the running gateway cannot route. An install is the one time
-transferring ownership is intended, which is why the installer waives it.
-
-`-CheckoutInstall` installs from the checkout you are standing in rather than
-cloning upstream. That distinction is the whole point of this guide: the old
-install's `origin` pointed at `duolahypercho/codex-router`, so `bin/update` and
-`git pull` inside it fetched someone else's tree.
-
-## Verify, in this order
+## Step 4 - install
 
 ```powershell
 cd $env:LOCALAPPDATA\codex-router
-.\codex-router.ps1 doctor 2>&1 | Select-String -Pattern '^FAIL' -Context 0,1
+.\install.ps1 -CheckoutInstall -Target codex
 ```
 
-**No output means every check passed.** If `Background service: ready` appears,
-the port is still held - repeat the stop step above and run
-`.\codex-router.ps1 enable`.
+This installs Node packages, installs the Python gateway (the longest part - a
+few minutes), rewrites the Codex config, registers the background task, and
+starts it. Your keys are found automatically; it will not ask for them.
 
-Then confirm the catalog and that your providers came back:
+**It ends well when you see:**
+
+```
+Installed the selected external model routes. Fully quit and reopen Codex.
+```
+
+**It ends badly when you see** `Router did not become healthy within 300
+seconds`. Go to "If step 4 fails" below - do not run the install again yet.
+
+## Step 5 - check
 
 ```powershell
-node src\catalog.mjs
-.\codex-router.ps1 providers
+.\codex-router.ps1 doctor
 ```
 
-`routed_models` should match the number of models you expect, and the
-`SHOW ... ready` rows should match what you wrote down earlier. A provider that
-has become `setup needed` lost its credential; re-add it with
-`.\codex-router.ps1 provider-key`, which prompts invisibly - never paste a key
-into a chat or a script.
+Every line should read `OK` or `WARN`. A `WARN` on a provider you never set up
+is normal. Any `FAIL` is not - the line under it says what to do.
 
-Finally, fully quit and reopen Codex. The routed models appear in the Codex
-surface, not in the ChatGPT chat tab, which lists OpenAI's own models and
-ignores the router entirely.
+## Step 6 - open Codex
 
-## When the picker looks right but the tray says "Router offline"
+Fully quit Codex and reopen it. Your routed models are in the Codex model
+picker (not the ChatGPT chat tab, which only ever lists OpenAI's own models).
 
-These two are not in conflict, and it is worth knowing why before you spend an
-afternoon on it. **The model picker reads a file.** Codex builds that list from
-the managed block in `config.toml` and from `merged-models.json`, both of which
-the installer writes before it ever starts the service. So a picker full of
-routed models proves the *configuration* landed. It says nothing about whether
-anything is listening, and selecting one of those models will fail at the first
-request.
+That is the whole install. The two sections below are for the tray and for
+when something goes wrong.
 
-"Router offline" in the tray, and the installer's
-`Router did not become healthy within 300 seconds: fetch failed`, are the same
-fact reported twice: nothing answered `http://127.0.0.1:4202/health`. `fetch
-failed` is Node's wording for a connection that was refused outright, so the
-question is why the process is not there.
+## The tray (optional)
 
-The scheduled task launches a VBScript, which launches a CMD wrapper, which
-appends everything to one log. That log is the only place the answer is:
+The tray is a separate download and changes nothing about routing. It shows
+usage and lets you toggle providers.
+
+```powershell
+& "$env:LOCALAPPDATA\codex-router\scripts\windows\Nexus Tray.bat"
+```
+
+Run that same file again any time to update it; it only replaces the tray when
+the build actually changed. Make a Desktop shortcut to it if you like.
+
+Do not use `.\codex-router.ps1 tray`, which tries to compile the tray from
+source and needs Rust.
+
+## If step 4 fails
+
+The one thing that tells you why is the log. Read the **last** lines only -
+the file is shared with every previous install, so anything older than a few
+minutes belongs to a router that no longer exists:
 
 ```powershell
 Get-Content $env:USERPROFILE\.codex\codex-router\router.log -Tail 40
 ```
 
-Read it by timestamp, not by content. The log lives in the state directory,
-which is deliberately shared across installs, so a `ready` line near the end can
-easily belong to yesterday's router on port 4102. What you want is whether
-anything was appended at the moment the installer was waiting.
+What it usually says, and what it means:
 
-Three outcomes, in the order they are worth checking:
+- **Nothing new at all.** Windows never ran the task. Run
+  `schtasks /Query /TN "Codex Router" /V /FO LIST` and look at `Last Result`.
+- **A Python traceback, or `LiteLLM gateway` never reported healthy.** The
+  gateway on port 4200 failed, so the router never opened 4202. Run
+  `.\codex-router.ps1 doctor`; it names the broken piece.
+- **`LiteLLM is not installed` or `virtual environment is broken`.** The
+  Python install did not finish. Run `.\install.ps1 -CheckoutInstall -ForceDeps`.
+- **Anything mentioning a proxy.** Run
+  `Get-ChildItem env: | Where-Object Name -match 'PROXY'`. A proxy variable
+  that captures loopback traffic makes the health check fail against a router
+  that is actually fine.
 
-- **Nothing new was appended.** The task never ran the wrapper. Confirm with
-  `schtasks /Query /TN "Codex Router" /V /FO LIST` - it still registers under
-  its old name on purpose - and look at `Last Run Time` and `Last Result`.
-- **The log ends in a Python or LiteLLM traceback.** The gateway on 4200 is what
-  failed; the router waits for it and never opens 4202. `.\codex-router.ps1
-  doctor` names the missing dependency.
-- **The log ends in a proxy or connect error.** Check with
-  `Get-ChildItem env: | Where-Object Name -match 'PROXY'`. Node only honours
-  those variables when the opt-in is set, and a proxy that captures loopback
-  traffic makes the health probe fail against a router that is running perfectly
-  well. `serviceProxyOptInProblem` in `src/proxy-environment.mjs` reports the
-  mismatched half of that.
+Two things that look like failures and are not:
 
-The Connections tab is a separate question and usually a false alarm: it lists
-every provider the registry knows, connected or not, in alphabetical order. Four
-rows reading "Add key" at the top of the list is what an untouched A-to-C looks
-like, not evidence that credentials were lost. Scroll to your own providers, or
-settle it from the command line with `.\codex-router.ps1 providers`.
+- **The model picker shows your routed models but the tray says "Router
+  offline".** The picker reads a file that the installer writes before it starts
+  anything, so a full picker only proves the config landed - it says nothing
+  about whether the router is running. Trust the tray, and read the log.
+- **The tray's Connections tab shows "Add key" on providers.** That tab lists
+  all 37 providers alphabetically, connected or not. Scroll down to yours, or
+  run `.\codex-router.ps1 providers` and look for `ready`.
 
-## The tray
+## Updating later
 
-The tray is a separate, optional artifact. It is the only compiled part of the
-project, and it changes nothing about routing.
+This folder is a normal clone of `rendez2k/nexus`, so updating is a pull and a
+reinstall:
 
 ```powershell
-& $env:USERPROFILE\Documents\nexus-deploy\scripts\windows\nexus-tray.ps1
+cd $env:LOCALAPPDATA\codex-router
+git pull
+.\install.ps1 -CheckoutInstall -Target codex
 ```
 
-That downloads the latest CI build, installs it to `%LOCALAPPDATA%\Nexus\tray`,
-and starts it. Re-running it is the update: the download is compared by hash and
-only replaces the local copy when the build actually changed.
+`.\codex-router.ps1 update` will refuse with "origin remote is not a recognized
+Codex Router repository". That is correct: it only knows the upstream project
+and would otherwise pull someone else's tree over yours.
 
-Do not install it with `bin/model-router-tray`. That path fingerprints the
-tray's *source* files and compares them against a stamp beside the binary, so a
-downloaded build always reads as stale and it tries to rebuild from source -
-which needs Rust and cargo.
+## Going back
 
-## Rolling back
-
-Routing can be switched off without uninstalling anything:
+Turn routing off without uninstalling anything:
 
 ```powershell
 cd $env:LOCALAPPDATA\codex-router
 node src\config-manager.mjs disable
 ```
 
-Restart Codex and it behaves as though the router were never installed, with
-every OpenAI model back. `node src\config-manager.mjs enable` restores routing.
-Keep the old install directory until you are satisfied; it can be renamed rather
-than deleted, and `install.ps1` will not read it.
+Restart Codex and it behaves as if the router were never there. `node
+src\config-manager.mjs enable` puts it back. The previous code is still in
+`codex-router-old` if you ever need it.
 
-## Afterwards
+## Cleaning up, once it all works
 
-The deployed tree is now a clone of `rendez2k/nexus`, so `git pull` inside it
-means what you would expect. Two habits keep it that way:
+```powershell
+Remove-Item -Recurse -Force $env:LOCALAPPDATA\codex-router-old
+Remove-Item -Recurse -Force $env:USERPROFILE\Documents\nexus-deploy -ErrorAction SilentlyContinue
+```
 
-- Change code in the checkout and pull, rather than editing inside
-  `%LOCALAPPDATA%\codex-router`. Edits made there are invisible to every
-  repository and are lost on the next install.
-- Take upstream through a sync of this repository rather than by pulling
-  upstream into the install. `docs/RENAME.md` records which identifiers must
-  not move, and the test suite is what proves a sync did not drop anything.
+The second folder is the earlier install attempt; it holds a gigabyte of
+Python packages and nothing else.
