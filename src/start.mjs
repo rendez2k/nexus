@@ -5,6 +5,7 @@ import path from "node:path";
 import { assertCallerSecret } from "./caller-auth.mjs";
 import {
   CALLER_SECRET_PATH,
+  CONFIG_PATH,
   INTERNAL_SECRET_PATH,
   LITELLM_CONFIG_PATH,
   MERGED_CATALOG_PATH,
@@ -25,6 +26,10 @@ import { venvRuntimeProblem } from "./venv-runtime.mjs";
 import { dependencyRepairHint } from "./dependency-repair.mjs";
 import { clearServiceProcessState, writeServiceProcessState } from "./service-process.mjs";
 import { environmentProxyOptedIn } from "./proxy-environment.mjs";
+import {
+  configPrivacyGuardDisabled,
+  startConfigPrivacyGuard,
+} from "./config-privacy-guard.mjs";
 
 const dependencyFix = dependencyRepairHint();
 
@@ -167,6 +172,7 @@ const commonEnv = {
 
 const children = [];
 let shuttingDown = false;
+let privacyGuard;
 
 // Every child goes through `spawnableCommand` for the one case that needs it:
 // a Windows `.cmd`/`.bat` launcher, which Node has refused to spawn without a
@@ -215,6 +221,7 @@ function waitForHealth(label, url, headers = {}, timeoutMs = 30_000, expectedSer
 function stopChildren() {
   if (shuttingDown) return;
   shuttingDown = true;
+  privacyGuard?.stop();
   for (const child of children) {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
   }
@@ -318,6 +325,16 @@ async function main() {
   );
 
   console.error(`[${frontendService}] ready (authenticated loopback endpoint)`);
+  // Codex's config.toml carries the managed router URL, and Codex rewrites
+  // that file with ordinary permissions whenever a setting changes. Keep the
+  // owner-only lock on it for as long as the service runs. Codex only: the
+  // other clients' documents are not rewritten behind the router's back.
+  if (TARGET === "codex" && !configPrivacyGuardDisabled()) {
+    privacyGuard = startConfigPrivacyGuard({
+      target: CONFIG_PATH,
+      log: (message) => console.error(`[${frontendService}] ${message}`),
+    });
+  }
   // Only the gateway is supervised. The forwarders and the router are ours and
   // are restarted by rebuilding the whole service; the gateway is a third-party
   // Python process that can end itself on a single bad upstream response

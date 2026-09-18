@@ -1318,6 +1318,16 @@ about it.
 - Treat the generated `/_codex-router/.../v1` config path as sensitive local
   authentication. Never paste the complete managed base URL into chat or a
   public issue; use the redacted status or support-bundle output.
+- Because that path lives in `config.toml`, the running service keeps the
+  file's owner-only permissions in place (`src/config-privacy-guard.mjs`,
+  started from `start.mjs` for the Codex target). Codex rewrites the file
+  with ordinary inherited permissions whenever a setting changes, which on
+  Windows leaves it readable by the sandbox account the agent's commands run
+  under. The guard changes permissions only — it never reads or writes the
+  document, so the ownership rules above are untouched — and it skips a file
+  whose ACL it could not read rather than relocking on a guess. Set
+  `MODEL_ROUTER_CONFIG_PRIVACY_GUARD=0` in the service environment to turn
+  it off for a diagnosis.
 - Do not delete retained keys, logs, backups, snapshots, or old state
   directories.
 - Do not restart or quit the Codex App from the installation task.
