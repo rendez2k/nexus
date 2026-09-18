@@ -1,7 +1,33 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { COMMANDS } from "../src/desktop-commands.mjs";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// The Start-with-Windows toggle lives only in the Rust tray, which no Node
+// test can exercise -- and the sync to upstream 9b2b88a replaced main.rs
+// wholesale and took the toggle with it, unnoticed, because nothing asserted
+// on it. This reads the source so the next sync fails here instead of on a
+// user's machine. See docs/RENAME.md, "What the same sync dropped".
+test("the Windows tray keeps its Start with Windows toggle", () => {
+  const source = readFileSync(
+    path.join(root, "apps", "desktop", "src-tauri", "src", "main.rs"),
+    "utf8",
+  );
+  // The registry value name is the identity of the entry: an earlier build
+  // wrote it, so a rename here would strand that entry rather than replace it.
+  assert.match(source, /const RUN_VALUE: &str = "Nexus";/);
+  assert.match(source, /CheckMenuItem::with_id\(\s*app,\s*"start-with-windows",/);
+  assert.match(source, /"start-with-windows" => \{/);
+  // Windows-only, by design: macOS has its own tray control and Linux startup
+  // belongs to the desktop environment. Each piece must carry the guard.
+  const windowsOnly = /#\[cfg\(target_os = "windows"\)\]\s*\n\s*(const RUN_KEY|const RUN_VALUE|fn apply_start_with_windows|fn start_with_windows_registered|let menu = \{|"start-with-windows" =>)/g;
+  assert.equal(source.match(windowsOnly)?.length, 6, "every autostart piece is cfg-gated to Windows");
+});
 
 test("desktop local-model commands use the shared model argument", () => {
   assert.deepEqual(COMMANDS.install_local_model({ model: "gemma4:12b" }), {

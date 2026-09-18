@@ -21,6 +21,21 @@ use tauri::{
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use tauri::menu::CheckMenuItem;
+
+// Autostart is written straight to the per-user Run key with reg.exe rather
+// than through a crate. The tray is built in CI from a checked-in Cargo.lock,
+// and a new dependency there costs a lock refresh on every platform for two
+// registry writes.
+//
+// This fork feature was dropped once by the sync to upstream 9b2b88a, which
+// replaced this file wholesale; docs/RENAME.md lists it among the casualties
+// and test/desktop-commands.test.mjs asserts the menu item is present.
+#[cfg(target_os = "windows")]
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(target_os = "windows")]
+const RUN_VALUE: &str = "Nexus";
 
 const PANEL_WIDTH: f64 = 382.0;
 const PANEL_HEIGHT: f64 = 610.0;
@@ -52,14 +67,62 @@ struct PlatformInfo {
 #[serde(default, rename_all = "camelCase")]
 struct DesktopSettings {
     island_enabled: bool,
+    // Off by default: an app that adds itself to startup without being asked is
+    // the kind of thing people uninstall.
+    start_with_windows: bool,
 }
 
 impl Default for DesktopSettings {
     fn default() -> Self {
         Self {
             island_enabled: true,
+            start_with_windows: false,
         }
     }
+}
+
+/// Writes or clears the per-user Run entry for the tray.
+///
+/// The stored command is re-written on every enable rather than only when the
+/// setting changes, because the path is baked into the registry value: moving
+/// or reinstalling the executable leaves a Run entry pointing at a file that is
+/// no longer there, and Windows reports nothing when it fails to launch it.
+#[cfg(target_os = "windows")]
+fn apply_start_with_windows(enabled: bool) -> Result<(), String> {
+    if enabled {
+        let exe = std::env::current_exe()
+            .map_err(|_| "Could not locate the Nexus executable.".to_string())?;
+        let command = format!("\"{}\"", exe.display());
+        let status = Command::new("reg.exe")
+            .args([
+                "add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &command, "/f",
+            ])
+            .status()
+            .map_err(|_| "Could not run reg.exe to set startup.".to_string())?;
+        if !status.success() {
+            return Err("Windows refused the startup registry write.".into());
+        }
+    } else {
+        // A missing value is the state the caller asked for, so only a failure
+        // with the value still present is worth reporting.
+        let status = Command::new("reg.exe")
+            .args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
+            .status()
+            .map_err(|_| "Could not run reg.exe to clear startup.".to_string())?;
+        if !status.success() && start_with_windows_registered() {
+            return Err("Windows refused to remove the startup entry.".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn start_with_windows_registered() -> bool {
+    Command::new("reg.exe")
+        .args(["query", RUN_KEY, "/v", RUN_VALUE])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 /// Returns whether WebKitGTK's DMA-BUF renderer should be disabled.
@@ -190,13 +253,7 @@ fn main() {
 }
 
 fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(
-        app,
-        "open",
-        tray_text("Open Nexus"),
-        true,
-        None::<&str>,
-    )?;
+    let open = MenuItem::with_id(app, "open", tray_text("Open Nexus"), true, None::<&str>)?;
     let toggle = MenuItem::with_id(
         app,
         "toggle-island",
@@ -205,6 +262,38 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", tray_text("Quit"), true, None::<&str>)?;
+
+    // Only offered where it means something. On macOS the tray already has its
+    // own "Show tray: Always / With Codex" control, and Linux startup is the
+    // desktop environment's business, not ours.
+    #[cfg(target_os = "windows")]
+    let menu = {
+        let start_with_windows = {
+            let state = app.state::<RouterState>();
+            let stored = state
+                .settings
+                .lock()
+                .map(|settings| settings.start_with_windows)
+                .unwrap_or(false);
+            // Reconcile on every launch: the registry is the source of truth
+            // for what Windows will actually do, and it can drift from the
+            // stored flag when the executable moves or a user edits the key.
+            if stored && !start_with_windows_registered() {
+                let _ = apply_start_with_windows(true);
+            }
+            stored
+        };
+        let startup = CheckMenuItem::with_id(
+            app,
+            "start-with-windows",
+            tray_text("Start with Windows"),
+            true,
+            start_with_windows,
+            None::<&str>,
+        )?;
+        Menu::with_items(app, &[&open, &toggle, &startup, &quit])?
+    };
+    #[cfg(not(target_os = "windows"))]
     let menu = Menu::with_items(app, &[&open, &toggle, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id("model-router")
@@ -226,6 +315,24 @@ fn install_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     let _ = update_island_enabled(app, state.inner(), enabled);
                 } else {
                     let _ = show_panel_window(app);
+                }
+            }
+            #[cfg(target_os = "windows")]
+            "start-with-windows" => {
+                let state = app.state::<RouterState>();
+                // The registry write is what has to succeed. Persisting the
+                // flag first would leave the menu ticked while Windows does
+                // nothing at login, which is worse than the toggle refusing.
+                let next = state
+                    .settings
+                    .lock()
+                    .map(|settings| !settings.start_with_windows)
+                    .unwrap_or(true);
+                if apply_start_with_windows(next).is_ok() {
+                    if let Ok(mut settings) = state.settings.lock() {
+                        settings.start_with_windows = next;
+                        let _ = save_settings(&state.settings_path, &settings);
+                    }
                 }
             }
             "quit" => app.exit(0),
@@ -266,6 +373,7 @@ fn tray_text(english: &str) -> String {
         return match english {
             "Open Nexus" => "打开 Nexus".into(),
             "Toggle activity pill" => "切换活动胶囊".into(),
+            "Start with Windows" => "开机时启动".into(),
             "Quit" => "退出".into(),
             // The product name is a proper noun and stays "Nexus" in every
             // locale, so the tray tooltip needs no arm of its own -- the

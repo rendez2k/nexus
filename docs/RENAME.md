@@ -52,6 +52,18 @@ after every sync, whatever the test count says:
   which doctor prints as a credential leak. `test/file-security.test.mjs`
   now imports the tri-state symbols, so a sync that drops them fails the
   suite instead of failing silently.
+- **The "Start with Windows" tray toggle** in
+  `apps/desktop/src-tauri/src/main.rs` (`RUN_KEY`, `RUN_VALUE`,
+  `apply_start_with_windows`, the `start-with-windows` menu item). Upstream's
+  tray has no such item, so a sync restores a menu without it while the
+  registry entry an earlier build wrote stays behind. `test/desktop-commands.test.mjs`
+  asserts the item is present.
+- **The tray icon set** in `apps/desktop/src-tauri/icons/`. Upstream ships
+  its own "Model Router" tile there under the same six filenames, so a sync
+  swaps the Nexus mark out without a conflict. The fork's set is the one
+  `assets/icon/build-icons.mjs` produces; its `source.svg` names the Nexus
+  mark, upstream's is titled "Model Router", which is the quickest way to
+  tell them apart after a sync.
 
 The skill-pack step in `install.ps1` is *not* in this list: it was never on
 Windows, upstream or fork, so a sync cannot remove it — but the same test
