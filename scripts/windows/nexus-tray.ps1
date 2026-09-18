@@ -81,5 +81,9 @@ if ($running) {
   Write-Host "Tray already running (PID $($running.Id -join ', '))."
 } else {
   Write-Host "Starting the tray."
-  Start-Process $exe
+  # The tray locates the router by walking up from its working directory
+  # before it tries the standard install location, so a tray started from a
+  # shell sitting in some other checkout runs *that* checkout's control plane
+  # and reports the real router as offline. Pin the directory to the install.
+  Start-Process $exe -WorkingDirectory (Join-Path $env:LOCALAPPDATA 'codex-router')
 }

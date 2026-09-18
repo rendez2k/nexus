@@ -1359,10 +1359,17 @@ fn resolve_source_root(app: &AppHandle) -> Option<PathBuf> {
         }
     }
     candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+    // The installed checkout outranks whatever the working directory happens
+    // to be under. A downloaded tray inherits its working directory from the
+    // shell or shortcut that started it, and when that shell was sitting in
+    // some other checkout -- a patch copy, an old deploy folder -- the walk
+    // up from there found that checkout's control.mjs first and the panel
+    // reported the real, healthy router as offline. Development builds are
+    // unaffected: CARGO_MANIFEST_DIR above already resolves their own tree.
+    candidates.extend(standard_source_roots());
     if let Ok(current) = env::current_dir() {
         candidates.extend(current.ancestors().map(Path::to_path_buf));
     }
-    candidates.extend(standard_source_roots());
     candidates
         .into_iter()
         .find(|candidate| candidate.join("src/control.mjs").is_file())
