@@ -6,7 +6,12 @@ import { validCallerSecret } from "./caller-auth.mjs";
 import { codexAuthStatus, findCodexBinary, runCodex } from "./codex-binary.mjs";
 import { commandOnPath, spawnableCommand } from "./spawnable-command.mjs";
 import { routedCodexAgentStatus } from "./codex-agent-catalog.mjs";
-import { privateFileIsProtected } from "./file-security.mjs";
+import {
+  PROTECTION_EXPOSED,
+  PROTECTION_PROTECTED,
+  PROTECTION_UNKNOWN,
+  privateFileProtection,
+} from "./file-security.mjs";
 import { grokCliPreflight } from "./grok-cli.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
 import { routedCatalogConfigured } from "./catalog.mjs";
@@ -356,19 +361,37 @@ const privacyTarget = codexTarget
 const configMode = existsSync(privacyTarget)
   ? statSync(privacyTarget).mode & 0o777
   : undefined;
-const configProtected = privateFileIsProtected(privacyTarget);
+// Three answers, three statuses. "Could not read the ACL" is a WARN, not a
+// FAIL: on Windows the check spawns PowerShell, which the file-security module
+// documents as failing under concurrent processes, and reporting that as an
+// exposed caller capability has already cost this fork two pointless secret
+// rotations. The detail also has to say which of the three it was -- the
+// old wording printed "current-user Windows ACL" for OK and FAIL alike.
+function privacyStatus(protection) {
+  if (protection === PROTECTION_PROTECTED) return "ok";
+  return protection === PROTECTION_UNKNOWN ? "warn" : "fail";
+}
+function privacyDetail(protection, mode) {
+  if (mode === undefined) return "missing";
+  if (protection === PROTECTION_UNKNOWN) {
+    return "could not read the ACL; rerun before assuming the file is exposed";
+  }
+  if (process.platform === "win32") {
+    return protection === PROTECTION_PROTECTED
+      ? "current-user Windows ACL"
+      : "ACL is not restricted to the current user";
+  }
+  return `mode ${mode.toString(8)}`;
+}
+const configProtection = privateFileProtection(privacyTarget);
 add(
-  configProtected ? "ok" : "fail",
+  privacyStatus(configProtection),
   codexTarget
     ? "Codex config privacy"
     : TARGET === "gemini"
       ? "Gemini environment privacy"
       : "Harness settings privacy",
-  configMode === undefined
-    ? "missing"
-    : process.platform === "win32"
-      ? "current-user Windows ACL"
-      : `mode ${configMode.toString(8)}`,
+  privacyDetail(configProtection, configMode),
   "Run ./bin/doctor --fix; the managed router URL contains a local caller capability.",
 );
 
@@ -690,18 +713,17 @@ const internalSecretValid = readableSecret(
   INTERNAL_SECRET_PATH,
   (value) => /^[A-Za-z0-9_-]{32,}$/.test(value),
 );
-const secretProtected =
-  internalSecretValid && privateFileIsProtected(INTERNAL_SECRET_PATH);
+// An invalid key is reported as exposed rather than unknown: it needs the
+// same regeneration whatever its ACL says, so there is nothing to rerun.
+const secretProtection = internalSecretValid
+  ? privateFileProtection(INTERNAL_SECRET_PATH)
+  : PROTECTION_EXPOSED;
 add(
-  secretProtected ? "ok" : "fail",
+  privacyStatus(secretProtection),
   "Internal service key",
-  secretMode === undefined
-    ? "missing"
-    : !internalSecretValid
-      ? "invalid"
-      : process.platform === "win32"
-        ? "current-user Windows ACL"
-        : `mode ${secretMode.toString(8)}`,
+  secretMode !== undefined && !internalSecretValid
+    ? "invalid"
+    : privacyDetail(secretProtection, secretMode),
   "Run ./bin/doctor --fix; this key is generated locally and is not a provider key.",
 );
 
@@ -709,18 +731,15 @@ const callerSecretMode = existsSync(CALLER_SECRET_PATH)
   ? statSync(CALLER_SECRET_PATH).mode & 0o777
   : undefined;
 const callerSecretValid = readableSecret(CALLER_SECRET_PATH, validCallerSecret);
-const callerSecretProtected =
-  callerSecretValid && privateFileIsProtected(CALLER_SECRET_PATH);
+const callerSecretProtection = callerSecretValid
+  ? privateFileProtection(CALLER_SECRET_PATH)
+  : PROTECTION_EXPOSED;
 add(
-  callerSecretProtected ? "ok" : "fail",
+  privacyStatus(callerSecretProtection),
   "Router caller key",
-  callerSecretMode === undefined
-    ? "missing"
-    : !callerSecretValid
-      ? "invalid"
-      : process.platform === "win32"
-        ? "current-user Windows ACL"
-        : `mode ${callerSecretMode.toString(8)}`,
+  callerSecretMode !== undefined && !callerSecretValid
+    ? "invalid"
+    : privacyDetail(callerSecretProtection, callerSecretMode),
   "Run ./bin/doctor --fix; this capability is generated locally and is not a provider key.",
 );
 

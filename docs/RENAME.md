@@ -39,6 +39,24 @@ user *reads* has changed, and nothing a running install *depends on* has.
   surface where that is invisible from the test suite — nothing asserts on its
   display text — so check it by eye after the next one.
 
+## What the same sync dropped besides the rename
+
+A sync replaces whole files, so it takes this fork's fixes with it wherever
+upstream still has the original. Two are confirmed from `9b2b88a`; check both
+after every sync, whatever the test count says:
+
+- **The tray display strings** above. No test covers them.
+- **The tri-state ACL check** in `src/file-security.mjs`
+  (`privateFileProtection`, `PROTECTION_*`). Upstream's two-valued version
+  reports a PowerShell that failed to start as an exposed caller capability,
+  which doctor prints as a credential leak. `test/file-security.test.mjs`
+  now imports the tri-state symbols, so a sync that drops them fails the
+  suite instead of failing silently.
+
+The skill-pack step in `install.ps1` is *not* in this list: it was never on
+Windows, upstream or fork, so a sync cannot remove it — but the same test
+file guards it positionally for the same reason.
+
 ## What this does *not* change on screen
 
 The model picker entries come from each config's `displayName` field, not from
