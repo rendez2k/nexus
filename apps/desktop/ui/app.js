@@ -547,17 +547,21 @@ function startPanel() {
     const enabled = target.signedRouting === true;
     const managed = target.signedRoutingManaged === true;
     elements.signedRoutingSwitch.checked = enabled;
-    elements.signedRoutingSwitch.disabled = state.signedRoutingBusy || managed || state.loginFreeBusy;
-    elements.signedRoutingSwitchLabel.title = managed
-      ? "Managed by the environment"
-      : enabled
-        ? "External requests use the router while native ChatGPT task history stays available."
-        : "Keep the native ChatGPT transport in place.";
-    elements.signedRoutingNote.textContent = managed
-      ? "Managed by the environment"
-      : enabled
+    // `managed` is the healthy on-state -- signed routing is active and the
+    // restore state that turns it back off is present and protected; doctor
+    // reports that same flag as "active". It is not an external override, so
+    // it must not lock the switch: doing so let the mode be turned on from
+    // here and never off again. Its absence while enabled is the abnormal
+    // case, and that is what gets called out.
+    elements.signedRoutingSwitch.disabled = state.signedRoutingBusy || state.loginFreeBusy;
+    elements.signedRoutingSwitchLabel.title = enabled
+      ? "External requests use the router while native ChatGPT task history stays available."
+      : "Keep the native ChatGPT transport in place.";
+    elements.signedRoutingNote.textContent = enabled
+      ? managed
         ? "Native GPT plus external models · task history preserved"
-        : "Keep native ChatGPT transport and task history";
+        : "Active, but its restore state is missing · run doctor --fix before turning it off"
+      : "Keep native ChatGPT transport and task history";
   }
 
   function renderPresence() {
