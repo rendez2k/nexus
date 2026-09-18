@@ -22,10 +22,14 @@ is why the tray could not find it.
 ## Before you start
 
 You need Git, Node.js 22.19 or newer, and either `uv` or Python 3.10+. Check all
-three in one go:
+three in one go (this is written for the Windows PowerShell 5.1 that ships with
+Windows; it also works in PowerShell 7):
 
 ```powershell
-git --version; node --version; (uv --version 2>$null) ?? (py -3 --version 2>$null) ?? "no uv or python"
+git --version; node --version
+if (Get-Command uv -ErrorAction SilentlyContinue) { uv --version }
+elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 --version }
+else { "no uv or python" }
 ```
 
 If any line errors, install the missing one first (Node from nodejs.org, Git
