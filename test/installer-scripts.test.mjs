@@ -576,12 +576,49 @@ test("the skills step runs after the rollback trap is disarmed", () => {
   assert.ok(trapDisarmed < skillsStep, "skills step must run after the trap is disarmed");
 });
 
+// install.ps1 has no trap; its rollback is the catch block around the install
+// transaction. The equivalent guarantee is positional: the skills step sits
+// after the health wait, which is the last statement that can throw, and it
+// never inspects $LASTEXITCODE. A Windows install used to omit the step
+// entirely and pass, leaving doctor to fail on "Codex skill pack: missing".
+test("install.ps1 runs the skills step for Codex, after the health wait", () => {
+  const source = readFileSync(path.join(root, "install.ps1"), "utf8");
+  const prepareExit = source.indexOf("Dependencies and generated files are prepared");
+  const healthWait = source.indexOf("src/wait-health.mjs");
+  const skillsStep = source.indexOf("skills-install.mjs install");
+  assert.notEqual(prepareExit, -1, "install.ps1 must keep the -PrepareOnly exit");
+  assert.notEqual(healthWait, -1, "install.ps1 must wait for router health");
+  assert.notEqual(skillsStep, -1, "install.ps1 must call the skills step");
+  assert.ok(prepareExit < skillsStep, "-PrepareOnly must exit before the skills step");
+  assert.ok(healthWait < skillsStep, "skills step must run after the health wait");
+  // Codex-only, like bin/install: the pack goes into Codex's user-skill
+  // directory, which a harness or Gemini install has no business touching.
+  const guarded = source.slice(healthWait, skillsStep);
+  assert.match(guarded, /if \(\$Target -eq "codex"\) \{\s*$/m);
+  // Best effort means the exit code is never read.
+  const afterStep = source.slice(skillsStep, skillsStep + 200);
+  assert.doesNotMatch(afterStep, /LASTEXITCODE/);
+});
+
 test("uninstall removes the managed skills", () => {
   const source = readScript("bin", "uninstall");
   assert.match(source, /skills-install\.mjs uninstall/, "bin/uninstall must remove the managed skills");
   const uninstallStep = source.indexOf("skills-install.mjs uninstall");
   const serviceStep = source.indexOf("src/service.mjs uninstall");
   assert.ok(serviceStep < uninstallStep, "skills removal must follow the service removal");
+});
+
+test("codex-router.ps1 uninstall removes the managed skills, and disable keeps them", () => {
+  const source = readFileSync(path.join(root, "codex-router.ps1"), "utf8");
+  const uninstallBlock = source.slice(source.indexOf('"uninstall" {'), source.indexOf('"update" {'));
+  const serviceStep = uninstallBlock.indexOf('"src\\service.mjs" @("uninstall")');
+  const skillsStep = uninstallBlock.indexOf('"src\\skills-install.mjs" @("uninstall")');
+  assert.notEqual(serviceStep, -1, "codex-router.ps1 uninstall must remove the service");
+  assert.notEqual(skillsStep, -1, "codex-router.ps1 uninstall must remove the managed skills");
+  assert.ok(serviceStep < skillsStep, "skills removal must follow the service removal");
+  // bin/disable leaves the pack installed; the Windows wrapper matches.
+  const disableBlock = source.slice(source.indexOf('"disable" {'), source.indexOf('"uninstall" {'));
+  assert.doesNotMatch(disableBlock, /skills-install/);
 });
 
 // A reinstall over a working router must not be able to leave the machine

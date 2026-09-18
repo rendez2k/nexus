@@ -448,6 +448,16 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Install-manifest recording failed." }
   & node src/wait-health.mjs
   if ($LASTEXITCODE -ne 0) { throw "The router did not become healthy." }
+  # The skill pack teaches custom routed models how to use the app's native
+  # tools. Best effort, exactly as in bin/install: skills-install.mjs always
+  # exits 0, and nothing here reads $LASTEXITCODE, so a skill failure can never
+  # reach the catch block and roll a working router back. It runs after the
+  # health wait for the same reason. It targets Codex's own user-skill
+  # directory, so the other targets skip it. Without this step every Windows
+  # install passed and then failed doctor on "Codex skill pack: missing".
+  if ($Target -eq "codex") {
+    & node src/skills-install.mjs install
+  }
   if ($Target -eq "dsh") {
     Write-Host "Published the selected external model routes to DeepSeek Harness. It reloads them on the next request."
   } elseif ($Target -eq "gemini") {

@@ -53,6 +53,9 @@ switch ($Command) {
   "uninstall" {
     Invoke-RouterNode "src\config-manager.mjs" @("disable")
     Invoke-RouterNode "src\service.mjs" @("uninstall")
+    # Mirrors bin/uninstall: the managed skill pack comes out after the
+    # service, and only on uninstall -- `disable` keeps it, as bin/disable does.
+    Invoke-RouterNode "src\skills-install.mjs" @("uninstall")
   }
   "update" {
     # `update check` stays a read-only comparison; a bare `update` installs.
