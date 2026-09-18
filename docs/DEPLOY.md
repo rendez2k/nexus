@@ -26,11 +26,11 @@ three in one go (this is written for the Windows PowerShell 5.1 that ships with
 Windows; it also works in PowerShell 7):
 
 ```powershell
-git --version; node --version
-if (Get-Command uv -ErrorAction SilentlyContinue) { uv --version }
-elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 --version }
-else { "no uv or python" }
+git --version; node --version; if (Get-Command uv -ErrorAction SilentlyContinue) { uv --version } elseif (Get-Command py -ErrorAction SilentlyContinue) { py -3 --version } else { "no uv or python" }
 ```
+
+One line on purpose: pasted a line at a time, an `elseif` on its own line is
+an error, and the guide is going to be pasted a line at a time.
 
 If any line errors, install the missing one first (Node from nodejs.org, Git
 from git-scm.com, uv from docs.astral.sh/uv). Everything below assumes a normal
